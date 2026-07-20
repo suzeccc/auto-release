@@ -2,8 +2,14 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 $skill = Get-Content -Raw -Encoding UTF8 (Join-Path $root "SKILL.md")
 $script = Join-Path $root "scripts\release.ps1"
+$setupScript = Join-Path $root "scripts\setup-project.ps1"
 $utils = Join-Path $root "scripts\release-utils.ps1"
 $reference = Join-Path $root "references\config.md"
+$workflowTemplates = @(
+  Join-Path $root "assets\workflows\tauri.yml"
+  Join-Path $root "assets\workflows\node.yml"
+  Join-Path $root "assets\workflows\go.yml"
+)
 
 function Assert-Match([string]$Value, [string]$Pattern, [string]$Message) {
   if ($Value -notmatch $Pattern) { throw $Message }
@@ -41,7 +47,23 @@ function Remove-TestDirectory([string]$Path) {
   Remove-Item -LiteralPath $resolved -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-foreach ($path in @($script, $utils, $reference)) {
+function New-TestDirectory([string]$Label) {
+  $path = Join-Path ([IO.Path]::GetTempPath()) ("project-release-automator-$Label-" + [guid]::NewGuid().ToString("N"))
+  New-Item -ItemType Directory -Path $path | Out-Null
+  & git -C $path init --initial-branch=main | Out-Null
+  if ($LASTEXITCODE -ne 0) { throw "git init failed for $Label fixture" }
+  return $path
+}
+
+function Write-TestUtf8([string]$Path, [string]$Content) {
+  $directory = Split-Path -Parent $Path
+  if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
+    New-Item -ItemType Directory -Path $directory -Force | Out-Null
+  }
+  [IO.File]::WriteAllText($Path, $Content, [Text.UTF8Encoding]::new($false))
+}
+
+foreach ($path in @($script, $setupScript, $utils, $reference) + $workflowTemplates) {
   if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
     throw "Required skill file missing: $path"
   }
@@ -216,10 +238,171 @@ try {
     -RepositoryRoot $planRoot
   $preparedPackage = Get-Content -Raw -Encoding UTF8 (Join-Path $planRoot "package.json") | ConvertFrom-Json
   Assert-Equal $preparedPackage.version "1.1.0" "Prepare did not apply the configured version update"
+
+  $schema2Config = Get-Content -Raw -Encoding UTF8 (Join-Path $planRoot ".codex-release.json") | ConvertFrom-Json
+  $schema2Config.schemaVersion = 2
+  Write-TestUtf8 `
+    (Join-Path $planRoot ".codex-release.json") `
+    (($schema2Config | ConvertTo-Json -Depth 20) + "`n")
+  $schema2Plan = & $script `
+    -Mode Plan `
+    -Version v1.1.0 `
+    -Summary "Generic project release." `
+    -RepositoryRoot $planRoot
+  Assert-Match ($schema2Plan -join [Environment]::NewLine) "Project: Example" "release runner rejected schema v2"
 }
 finally {
   Remove-TestDirectory $planRoot
   Remove-TestDirectory $bareRoot
+}
+
+$nodeRoot = New-TestDirectory "node"
+try {
+  Write-TestUtf8 (Join-Path $nodeRoot "package.json") @'
+{
+  "name": "node-fixture",
+  "version": "1.2.3",
+  "scripts": {
+    "test": "node --test",
+    "build": "node build.js"
+  }
+}
+'@
+  Write-TestUtf8 (Join-Path $nodeRoot "package-lock.json") @'
+{
+  "name": "node-fixture",
+  "version": "1.2.3",
+  "lockfileVersion": 3,
+  "packages": {
+    "": {
+      "name": "node-fixture",
+      "version": "1.2.3"
+    }
+  }
+}
+'@
+  $nodeDetection = (& $setupScript -Mode Detect -RepositoryRoot $nodeRoot) | ConvertFrom-Json
+  Assert-Equal $nodeDetection.projectType "node" "Node fixture was not detected"
+  Assert-Equal $nodeDetection.packageManager "npm" "Node package manager was not detected"
+  if (Test-Path -LiteralPath (Join-Path $nodeRoot ".codex-release.json")) {
+    throw "Detect mode wrote a release config"
+  }
+  & $setupScript -Mode Generate -RepositoryRoot $nodeRoot
+  & $setupScript -Mode Validate -RepositoryRoot $nodeRoot
+  $nodeConfigPath = Join-Path $nodeRoot ".codex-release.json"
+  $nodeWorkflowPath = Join-Path $nodeRoot ".github\workflows\release.yml"
+  $nodeConfig = Get-Content -Raw -Encoding UTF8 $nodeConfigPath | ConvertFrom-Json
+  Assert-Equal $nodeConfig.schemaVersion 2 "Node config does not use schema v2"
+  Assert-Equal $nodeConfig.automation.template "node-v1" "Node config uses the wrong template"
+  Assert-Equal @($nodeConfig.version.updates).Count 3 "Node config did not constrain all root version entries"
+  $nodeConfigHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $nodeConfigPath).Hash
+  $nodeWorkflowHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $nodeWorkflowPath).Hash
+  & $setupScript -Mode Generate -RepositoryRoot $nodeRoot
+  Assert-Equal (Get-FileHash -Algorithm SHA256 -LiteralPath $nodeConfigPath).Hash $nodeConfigHash "Node config generation is not idempotent"
+  Assert-Equal (Get-FileHash -Algorithm SHA256 -LiteralPath $nodeWorkflowPath).Hash $nodeWorkflowHash "Node workflow generation is not idempotent"
+}
+finally {
+  Remove-TestDirectory $nodeRoot
+}
+
+$tauriRoot = New-TestDirectory "tauri"
+try {
+  Write-TestUtf8 (Join-Path $tauriRoot "src-tauri\tauri.conf.json") @'
+{
+  "productName": "Tauri Fixture",
+  "version": "2.3.4",
+  "identifier": "invalid.example.fixture"
+}
+'@
+  Write-TestUtf8 (Join-Path $tauriRoot "src-tauri\Cargo.toml") @'
+[package]
+name = "tauri-fixture"
+version = "2.3.4"
+edition = "2021"
+'@
+  Write-TestUtf8 (Join-Path $tauriRoot "src-tauri\Cargo.lock") @'
+version = 4
+
+[[package]]
+name = "tauri-fixture"
+version = "2.3.4"
+'@
+  Write-TestUtf8 (Join-Path $tauriRoot "package.json") @'
+{
+  "name": "tauri-fixture",
+  "version": "2.3.4",
+  "scripts": {
+    "tauri": "tauri",
+    "test": "vitest"
+  }
+}
+'@
+  Write-TestUtf8 (Join-Path $tauriRoot "pnpm-lock.yaml") "lockfileVersion: '9.0'`n"
+  $tauriDetection = (& $setupScript -Mode Detect -RepositoryRoot $tauriRoot) | ConvertFrom-Json
+  Assert-Equal $tauriDetection.projectType "tauri" "Tauri fixture was not detected with highest priority"
+  Assert-Equal $tauriDetection.packageManager "pnpm" "Tauri package manager was not detected"
+  & $setupScript -Mode Generate -RepositoryRoot $tauriRoot
+  & $setupScript -Mode Validate -RepositoryRoot $tauriRoot
+  $tauriConfig = Get-Content -Raw -Encoding UTF8 (Join-Path $tauriRoot ".codex-release.json") | ConvertFrom-Json
+  Assert-Equal $tauriConfig.automation.template "tauri-v1" "Tauri config uses the wrong template"
+  Assert-Equal @($tauriConfig.publish.release.requiredAssets).Count 6 "Tauri config does not validate all platform bundles"
+  $tauriWorkflow = Get-Content -Raw -Encoding UTF8 (Join-Path $tauriRoot ".github\workflows\release.yml")
+  Assert-Match $tauriWorkflow 'windows-11-arm' "Tauri workflow is missing Windows ARM64"
+  Assert-Match $tauriWorkflow 'x86_64-apple-darwin' "Tauri workflow is missing macOS Intel"
+  Assert-Match $tauriWorkflow 'aarch64-apple-darwin' "Tauri workflow is missing macOS Apple Silicon"
+  Assert-Match $tauriWorkflow 'x86_64-unknown-linux-gnu' "Tauri workflow is missing Linux"
+}
+finally {
+  Remove-TestDirectory $tauriRoot
+}
+
+$goRoot = New-TestDirectory "go"
+try {
+  Write-TestUtf8 (Join-Path $goRoot "go.mod") "module example.invalid/team/go-fixture`n`ngo 1.24`n"
+  Write-TestUtf8 (Join-Path $goRoot "cmd\go-fixture\main.go") "package main`n`nfunc main() {}`n"
+  $goDetection = (& $setupScript -Mode Detect -RepositoryRoot $goRoot) | ConvertFrom-Json
+  Assert-Equal $goDetection.projectType "go" "Go fixture was not detected"
+  Assert-Equal $goDetection.buildPath "./cmd/go-fixture" "Go command build path was not detected"
+  & $setupScript -Mode Generate -RepositoryRoot $goRoot
+  & $setupScript -Mode Validate -RepositoryRoot $goRoot
+  Assert-Equal ([IO.File]::ReadAllText((Join-Path $goRoot "VERSION")).Trim()) "0.1.0" "Go VERSION default is wrong"
+  $goConfig = Get-Content -Raw -Encoding UTF8 (Join-Path $goRoot ".codex-release.json") | ConvertFrom-Json
+  Assert-Equal $goConfig.automation.template "go-v1" "Go config uses the wrong template"
+  Assert-Equal @($goConfig.publish.release.requiredAssets).Count 6 "Go config does not validate six release assets"
+}
+finally {
+  Remove-TestDirectory $goRoot
+}
+
+$ambiguousRoot = New-TestDirectory "ambiguous"
+try {
+  Write-TestUtf8 (Join-Path $ambiguousRoot "package.json") '{"name":"ambiguous","version":"1.0.0"}'
+  Write-TestUtf8 (Join-Path $ambiguousRoot "go.mod") "module example.invalid/ambiguous`n`ngo 1.24`n"
+  Assert-Throws {
+    & $setupScript -Mode Detect -RepositoryRoot $ambiguousRoot
+  } "detection is ambiguous" "Mixed Node and Go project must require an explicit project type"
+}
+finally {
+  Remove-TestDirectory $ambiguousRoot
+}
+
+$humanWorkflowRoot = New-TestDirectory "human-workflow"
+try {
+  Write-TestUtf8 (Join-Path $humanWorkflowRoot "package.json") '{"name":"protected","version":"1.0.0"}'
+  Write-TestUtf8 (Join-Path $humanWorkflowRoot ".github\workflows\release.yml") @'
+name: Human Release
+on: workflow_dispatch
+jobs: {}
+'@
+  Assert-Throws {
+    & $setupScript -Mode Generate -RepositoryRoot $humanWorkflowRoot
+  } "Refusing to overwrite human-managed workflow" "Generator overwrote a human workflow"
+  if (Test-Path -LiteralPath (Join-Path $humanWorkflowRoot ".codex-release.json")) {
+    throw "Generator wrote config before checking the workflow conflict"
+  }
+}
+finally {
+  Remove-TestDirectory $humanWorkflowRoot
 }
 
 Assert-Match $scriptSource '\.codex-release\.json' "script does not use repository config"
@@ -233,6 +416,7 @@ Assert-Match $scriptSource 'Release is already public' "missing public release g
 Assert-Match $scriptSource 'gh\.exe' "missing GitHub CLI fallback"
 Assert-Match $scriptSource 'Invoke-ParallelShellChecked' "missing parallel prepare support"
 Assert-Match $scriptSource 'publish-draft.*create.*none' "missing release modes"
+Assert-Match $scriptSource 'schemaVersion -notin @\(1, 2\)' "release runner does not accept schema v1 and v2"
 if ($scriptSource -match 'D:\\QiLin|CopyShare|suzeccc') {
   throw "generic release script still contains CopyShare-specific values"
 }
@@ -245,7 +429,21 @@ Assert-Match $skill '\.codex-release\.json' "skill does not document repository 
 Assert-Match $skill 'Plan[\s\S]*Prepare[\s\S]*Publish' "missing phase order"
 Assert-Match $skill '`--force`' "missing force-push guard"
 Assert-Match $skill '`git add \.`' "missing staging guard"
+Assert-Match $skill 'Detect[\s\S]*Generate[\s\S]*Validate' "skill does not document project setup modes"
 Assert-Match $referenceSource 'publish-draft' "config reference missing draft strategy"
 Assert-Match $referenceSource 'uploadAssets' "config reference missing upload assets"
+
+$setupSource = Get-Content -Raw -Encoding UTF8 $setupScript
+Assert-Match $setupSource 'Refusing to overwrite human-managed workflow' "setup script lacks workflow overwrite protection"
+Assert-Match $setupSource 'tauri[\s\S]*node[\s\S]*go' "setup script does not support all project types"
+if ($setupSource -match 'D:\\QiLin|CopyShare|suzeccc') {
+  throw "generic setup script contains project-specific values"
+}
+foreach ($template in $workflowTemplates) {
+  $templateSource = Get-Content -Raw -Encoding UTF8 $template
+  Assert-Match $templateSource '^# Generated by Project Release Automator' "workflow template lacks managed marker"
+  Assert-Match $templateSource 'permissions:[\s\S]*contents: write' "workflow template lacks release permissions"
+  Assert-Match $templateSource 'draft|releaseDraft' "workflow template does not create a draft release"
+}
 
 Write-Host "project-release-automator contract passed"

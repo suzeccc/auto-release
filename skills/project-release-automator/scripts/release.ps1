@@ -135,7 +135,8 @@ function Initialize-ReleaseContext {
 }
 
 function Assert-ReleaseConfig {
-  if ([int](Get-RequiredProperty $script:Config "schemaVersion" "root") -ne 1) {
+  $schemaVersion = [int](Get-RequiredProperty $script:Config "schemaVersion" "root")
+  if ($schemaVersion -notin @(1, 2)) {
     throw "Unsupported release config schemaVersion"
   }
   foreach ($name in @("projectName", "branch", "remote")) {

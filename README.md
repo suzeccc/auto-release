@@ -1,6 +1,6 @@
 # Project Release Automator
 
-一个配置驱动的 Codex Skill，用于在 Windows 上打包和正式发布本地 Git 项目。它将版本更新、测试、构建、产物校验、Git 标签、GitHub Actions 和 GitHub Release 统一为可复现的 `Plan -> Prepare -> Publish` 流程。
+一个通用的 Codex Skill，用于自动识别项目、生成发布配置与 GitHub Actions，并在 Windows 上打包和正式发布本地 Git 项目。它将初始化阶段的 `Detect -> Generate -> Validate` 与发布阶段的 `Plan -> Prepare -> Publish` 统一为可复现流程。
 
 ## 安装
 
@@ -26,10 +26,22 @@ python -X utf8 "$env:USERPROFILE\.codex\skills\.system\skill-installer\scripts\i
 正式发布 v1.2.3
 ```
 
-项目根目录需要 `.codex-release.json`。首次使用时，Codex 会检查项目清单、测试/构建命令、CI 工作流和产物路径，然后生成项目专属配置。完整字段说明见 [`skills/project-release-automator/references/config.md`](skills/project-release-automator/references/config.md)。
+首次使用时可直接要求 Codex“为这个项目创建发布工作流”，或手动运行：
+
+```powershell
+$setup = "$env:USERPROFILE\.codex\skills\project-release-automator\scripts\setup-project.ps1"
+& $setup -Mode Detect -RepositoryRoot "<仓库根目录>"
+& $setup -Mode Generate -RepositoryRoot "<仓库根目录>"
+& $setup -Mode Validate -RepositoryRoot "<仓库根目录>"
+```
+
+生成器支持 Tauri、Node.js 和 Go，创建项目级 `.codex-release.json` 与标签触发的 `.github/workflows/release.yml`。若工作流由人工维护，生成器会拒绝覆盖。完整字段说明见 [`skills/project-release-automator/references/config.md`](skills/project-release-automator/references/config.md)。
 
 ## 支持能力
 
+- 自动检测 Tauri、Node.js、Go 及 npm、pnpm、Yarn、Bun
+- 安全、幂等地生成发布配置与 GitHub Actions，拒绝覆盖人工工作流
+- Tauri 五平台、Go 六目标和 Node.js `.tgz` 发布矩阵
 - 项目级版本读取和多文件正则更新
 - 串行或并行测试与构建
 - 构建产物复制、Windows 文件版本校验和 SHA256
@@ -53,7 +65,7 @@ python -X utf8 "$env:USERPROFILE\.codex\skills\.system\skill-installer\scripts\i
 
 ## English
 
-`project-release-automator` is a configuration-driven Codex Skill for packaging and publishing local Git projects on Windows. Each repository defines its release behavior in `.codex-release.json`; the Skill safely executes version updates, tests, builds, artifact checks, Git tags, GitHub Actions, and GitHub Releases.
+`project-release-automator` detects Tauri, Node.js, and Go repositories, safely generates repository-specific release configuration and tag-triggered GitHub Actions, then packages and publishes releases from Windows. Human-managed workflows are never overwritten.
 
 ## License
 
