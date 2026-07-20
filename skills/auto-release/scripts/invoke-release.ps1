@@ -345,6 +345,22 @@ function Expand-ArtifactToken([string]$Value, $Config, [string]$CurrentVersion) 
 function Get-LocalArtifactRecords($Config) {
   $records = @()
   $currentVersion = Get-CurrentVersion $Config
+  $outputRelative = [string](Get-OptionalProperty $Config.prepare "localOutputDirectory" "output")
+  if ([string]::IsNullOrWhiteSpace($outputRelative)) { $outputRelative = "output" }
+  $outputPath = Resolve-RepositoryPath $outputRelative
+  if (Test-Path -LiteralPath $outputPath -PathType Container) {
+    foreach ($file in @(Get-ChildItem -LiteralPath $outputPath -File)) {
+      $relative = $file.FullName.Substring($script:ResolvedRepositoryRoot.Length + 1).Replace("\", "/")
+      $records += [pscustomobject]@{
+        path = $relative
+        sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $file.FullName).Hash
+      }
+    }
+  }
+  if ($records.Count -gt 0) {
+    return @($records | Sort-Object path -Unique)
+  }
+
   foreach ($artifact in @(Get-OptionalProperty $Config.prepare "artifacts" @())) {
     $relative = Expand-ArtifactToken ([string](Get-OptionalProperty $artifact "destination" $artifact.source)) $Config $currentVersion
     $path = Resolve-RepositoryPath $relative

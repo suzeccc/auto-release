@@ -857,6 +857,7 @@ function New-GenerationBundle(
     }
     prepare = [pscustomobject][ordered]@{
       parallel = $false
+      localOutputDirectory = "output"
       commands = @($commands)
       artifacts = @($artifacts)
     }

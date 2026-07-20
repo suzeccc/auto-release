@@ -53,7 +53,7 @@ $invoke = "$env:USERPROFILE\.codex\skills\auto-release\scripts\invoke-release.ps
   -ReleaseNotes "<中文 Release Notes>" -RepositoryRoot "<仓库根目录>"
 ```
 
-`LocalBuild` 在 `.git/auto-release/local-build.json` 保存本地构建指纹。正式发布时源文件和产物未变化即可跳过重复的本地构建，但 GitHub Actions 仍会重新生成正式发布包。
+`LocalBuild` 会自动创建 `<仓库根目录>/output`，把本地构建产物复制为不含版本号的 `output/<项目名><扩展名>`；例如 `output/CopyShare.exe`。构建工具的原始产物仍保留，同时在 `.git/auto-release/local-build.json` 保存构建指纹。正式发布时源文件和产物未变化即可跳过重复的本地构建，但 GitHub Actions 仍会重新生成正式发布包。
 
 人工工作流默认不覆盖：可选择兼容复用，或保留原工作流并新建 `.github/workflows/auto-release.yml`。
 
@@ -64,6 +64,7 @@ $invoke = "$env:USERPROFILE\.codex\skills\auto-release\scripts\invoke-release.ps
 - 识别 npm、pnpm、Yarn、Bun、pip、uv、Poetry、Cargo、NuGet 等工具链
 - 安全、幂等地生成发布配置与 GitHub Actions，拒绝覆盖人工工作流
 - 本地构建不改版本；全量中文提交推送；正式发布三种独立操作
+- 本地构建统一输出到 `output/<项目名><扩展名>`，目录或文件不存在时自动创建
 - 基于源文件指纹和 SHA256 复用有效本地构建
 - 兼容复用人工工作流，或保留原文件创建独立发布工作流
 - Tauri 五平台、Go 六目标和 Node.js `.tgz` 发布矩阵

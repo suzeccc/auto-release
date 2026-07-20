@@ -405,24 +405,226 @@ function Invoke-ConfiguredCommands {
   }
 }
 
-function Get-PreparedArtifacts {
+function ConvertTo-LocalOutputStem {
+  $name = [string]$script:Config.projectName
+  foreach ($character in [IO.Path]::GetInvalidFileNameChars()) {
+    $name = $name.Replace([string]$character, "-")
+  }
+  $name = $name.Trim().TrimEnd(".")
+  if ([string]::IsNullOrWhiteSpace($name)) { return "app" }
+  return $name
+}
+
+function Get-LocalArtifactExtension([IO.FileInfo]$File) {
+  $lowerName = $File.Name.ToLowerInvariant()
+  foreach ($extension in @(".tar.gz", ".appimage", ".nupkg", ".crate", ".whl", ".tgz", ".aab", ".apk", ".msi", ".dmg", ".deb", ".rpm", ".jar", ".zip", ".exe")) {
+    if ($lowerName.EndsWith($extension, [StringComparison]::Ordinal)) { return $extension }
+  }
+  return $File.Extension.ToLowerInvariant()
+}
+
+function ConvertTo-RepositoryRelativePath([string]$Path) {
+  $fullPath = Get-NormalizedPath $Path
+  $prefix = $script:ResolvedRepositoryRoot + [IO.Path]::DirectorySeparatorChar
+  if (-not $fullPath.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "Artifact is outside the repository: $Path"
+  }
+  return $fullPath.Substring($prefix.Length).Replace("\", "/")
+}
+
+function Get-PreferredLocalFile($Files) {
+  $candidates = @($Files | Where-Object { $_ -and $_.Exists })
+  if ($candidates.Count -eq 0) { return $null }
+  $stem = ConvertTo-LocalOutputStem
+  $sorted = @($candidates | Sort-Object @{ Expression = {
+    if ($_.BaseName.Equals($stem, [StringComparison]::OrdinalIgnoreCase)) { 0 }
+    elseif ($_.BaseName.IndexOf($stem, [StringComparison]::OrdinalIgnoreCase) -ge 0) { 1 }
+    else { 2 }
+  } }, @{ Expression = { $_.LastWriteTimeUtc }; Descending = $true })
+  return $sorted[0]
+}
+
+function Get-DiscoveredLocalArtifactFiles {
+  $type = [string](Get-OptionalProperty $script:Config "projectType" "")
+  $files = @()
+  if ($type -eq "tauri") {
+    $root = Resolve-RepositoryPath "src-tauri/target/release"
+    if (Test-Path -LiteralPath $root -PathType Container) {
+      $preferred = Get-PreferredLocalFile @(Get-ChildItem -LiteralPath $root -File -Filter "*.exe")
+      if ($preferred) { $files += $preferred }
+    }
+  }
+  elseif ($type -eq "node") {
+    $root = Resolve-RepositoryPath "dist"
+    if (Test-Path -LiteralPath $root -PathType Container) {
+      $preferred = Get-PreferredLocalFile @(Get-ChildItem -LiteralPath $root -File -Filter "*.tgz")
+      if ($preferred) { $files += $preferred }
+    }
+  }
+  elseif ($type -eq "go") {
+    $root = Resolve-RepositoryPath "dist"
+    if (Test-Path -LiteralPath $root -PathType Container) {
+      $preferred = Get-PreferredLocalFile @(Get-ChildItem -LiteralPath $root -File -Filter "*.exe")
+      if ($preferred) { $files += $preferred }
+    }
+  }
+  elseif ($type -eq "python") {
+    $root = Resolve-RepositoryPath "dist"
+    if (Test-Path -LiteralPath $root -PathType Container) {
+      foreach ($filter in @("*.whl", "*.tar.gz")) {
+        $preferred = Get-PreferredLocalFile @(Get-ChildItem -LiteralPath $root -File -Filter $filter)
+        if ($preferred) { $files += $preferred }
+      }
+    }
+  }
+  elseif ($type -eq "rust") {
+    $root = Resolve-RepositoryPath "target/package"
+    if (Test-Path -LiteralPath $root -PathType Container) {
+      $preferred = Get-PreferredLocalFile @(Get-ChildItem -LiteralPath $root -File -Filter "*.crate")
+      if ($preferred) { $files += $preferred }
+    }
+  }
+  elseif ($type -eq "dotnet") {
+    $root = Resolve-RepositoryPath "dist"
+    if (Test-Path -LiteralPath $root -PathType Container) {
+      $preferred = Get-PreferredLocalFile @(Get-ChildItem -LiteralPath $root -File -Filter "*.nupkg")
+      if ($preferred) { $files += $preferred }
+    }
+  }
+  elseif ($type -eq "java") {
+    $candidates = @()
+    foreach ($relativeRoot in @("target", "build/libs")) {
+      $root = Resolve-RepositoryPath $relativeRoot
+      if (Test-Path -LiteralPath $root -PathType Container) {
+        $candidates += @(Get-ChildItem -LiteralPath $root -File -Filter "*.jar" | Where-Object {
+          $_.Name -notmatch '(?i)(?:-sources|-javadoc|-tests)\.jar$' -and $_.Name -notmatch '(?i)^original-'
+        })
+      }
+    }
+    $preferred = Get-PreferredLocalFile $candidates
+    if ($preferred) { $files += $preferred }
+  }
+  elseif ($type -eq "cmake") {
+    $root = Resolve-RepositoryPath "build"
+    if (Test-Path -LiteralPath $root -PathType Container) {
+      $candidates = @(Get-ChildItem -LiteralPath $root -Recurse -File -Filter "*.exe" | Where-Object {
+        $_.FullName -notmatch '[\\/]CMakeFiles[\\/]'
+      })
+      $preferred = Get-PreferredLocalFile $candidates
+      if ($preferred) { $files += $preferred }
+    }
+  }
+  elseif ($type -eq "flutter") {
+    $root = Resolve-RepositoryPath "build/windows"
+    if (Test-Path -LiteralPath $root -PathType Container) {
+      $candidates = @(Get-ChildItem -LiteralPath $root -Recurse -File -Filter "*.exe" | Where-Object {
+        $_.FullName -match '[\\/]runner[\\/]Release[\\/]'
+      })
+      $preferred = Get-PreferredLocalFile $candidates
+      if ($preferred) { $files += $preferred }
+    }
+  }
+  elseif ($type -eq "android") {
+    $candidates = @()
+    foreach ($directory in @(Get-ChildItem -LiteralPath $script:ResolvedRepositoryRoot -Directory)) {
+      $root = Join-Path $directory.FullName "build\outputs"
+      if (Test-Path -LiteralPath $root -PathType Container) {
+        foreach ($extension in @("*.apk", "*.aab")) {
+          $preferred = Get-PreferredLocalFile @(Get-ChildItem -LiteralPath $root -Recurse -File -Filter $extension)
+          if ($preferred) { $candidates += $preferred }
+        }
+      }
+    }
+    $files += $candidates
+  }
+  elseif ($type -eq "electron") {
+    $candidates = @()
+    foreach ($relativeRoot in @("dist", "out", "release")) {
+      $root = Resolve-RepositoryPath $relativeRoot
+      if (Test-Path -LiteralPath $root -PathType Container) {
+        $candidates += @(Get-ChildItem -LiteralPath $root -Recurse -File -Filter "*.exe" | Where-Object {
+          $_.Name -notmatch '(?i)uninstall'
+        })
+      }
+    }
+    $preferred = Get-PreferredLocalFile $candidates
+    if ($preferred) { $files += $preferred }
+  }
+  return @($files | Sort-Object FullName -Unique)
+}
+
+function Get-LocalArtifactDestination([IO.FileInfo]$Source, $Artifact, [hashtable]$UsedNames) {
+  $prepare = $script:Config.prepare
+  $outputRelative = [string](Get-OptionalProperty $prepare "localOutputDirectory" "output")
+  if ([string]::IsNullOrWhiteSpace($outputRelative)) { $outputRelative = "output" }
+  $outputDirectory = Resolve-RepositoryPath $outputRelative
+  New-Item -ItemType Directory -Force -Path $outputDirectory | Out-Null
+
+  $extension = Get-LocalArtifactExtension $Source
+  $localName = [string](Get-OptionalProperty $Artifact "localName" "")
+  if ($localName) {
+    if ([IO.Path]::GetFileName($localName) -ne $localName) {
+      throw "prepare.artifacts[].localName must be a file name: $localName"
+    }
+  }
+  else {
+    $localName = "$(ConvertTo-LocalOutputStem)$extension"
+  }
+
+  $nameExtension = [IO.Path]::GetExtension($localName)
+  if ($localName.EndsWith(".tar.gz", [StringComparison]::OrdinalIgnoreCase)) {
+    $nameExtension = ".tar.gz"
+  }
+  $baseName = $localName.Substring(0, $localName.Length - $nameExtension.Length)
+  $candidate = $localName
+  $count = 1
+  while ($UsedNames.ContainsKey($candidate.ToLowerInvariant())) {
+    $count += 1
+    $candidate = "$baseName-$count$nameExtension"
+  }
+  $localName = $candidate
+  $UsedNames[$localName.ToLowerInvariant()] = $true
+  return Join-Path $outputDirectory $localName
+}
+
+function Get-PreparedArtifacts([bool]$LocalBuild = $false) {
   $results = @()
-  foreach ($artifact in @(Get-OptionalProperty $script:Config.prepare "artifacts" @())) {
+  $artifactDefinitions = @(Get-OptionalProperty $script:Config.prepare "artifacts" @())
+  if ($LocalBuild -and $artifactDefinitions.Count -eq 0) {
+    foreach ($file in @(Get-DiscoveredLocalArtifactFiles)) {
+      $artifactDefinitions += [pscustomobject][ordered]@{
+        source = ConvertTo-RepositoryRelativePath $file.FullName
+        sha256 = $true
+      }
+    }
+  }
+  if ($LocalBuild -and $artifactDefinitions.Count -eq 0) {
+    Write-Warning "Build completed, but no file-based local artifact could be discovered"
+    return @()
+  }
+
+  $usedLocalNames = @{}
+  foreach ($artifact in $artifactDefinitions) {
     $sourceRelative = Expand-ConfigTokens ([string]$artifact.source)
     $source = Resolve-RepositoryPath $sourceRelative
     if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
       throw "Built artifact not found: $source"
     }
 
-    $destinationRelative = Get-OptionalProperty $artifact "destination"
     $destination = $source
-    if ($destinationRelative) {
-      $destination = Resolve-RepositoryPath (Expand-ConfigTokens ([string]$destinationRelative))
+    if ($LocalBuild) {
+      $destination = Get-LocalArtifactDestination (Get-Item -LiteralPath $source) $artifact $usedLocalNames
+    }
+    else {
+      $destinationRelative = Get-OptionalProperty $artifact "destination"
+      if ($destinationRelative) {
+        $destination = Resolve-RepositoryPath (Expand-ConfigTokens ([string]$destinationRelative))
+      }
+    }
+    if (-not $source.Equals($destination, [StringComparison]::OrdinalIgnoreCase)) {
       $destinationDirectory = Split-Path -Parent $destination
       New-Item -ItemType Directory -Force -Path $destinationDirectory | Out-Null
-      if (-not $source.Equals($destination, [StringComparison]::OrdinalIgnoreCase)) {
-        Copy-Item -LiteralPath $source -Destination $destination -Force
-      }
+      Copy-Item -LiteralPath $source -Destination $destination -Force
     }
 
     $file = Get-Item -LiteralPath $destination
@@ -674,7 +876,7 @@ function Invoke-LocalBuild {
   $currentVersion = Get-CurrentVersion
   Write-Host "Local build: $($script:Config.projectName) $currentVersion"
   Invoke-ConfiguredCommands
-  $artifacts = @(Get-PreparedArtifacts)
+  $artifacts = @(Get-PreparedArtifacts $true)
   Write-Host "Local build completed without changing the project version"
   if ($artifacts.Count -gt 0) {
     $artifacts | Format-List

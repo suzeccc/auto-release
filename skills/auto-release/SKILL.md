@@ -50,7 +50,7 @@ $invoke = "$env:USERPROFILE\.codex\skills\auto-release\scripts\invoke-release.ps
 & $invoke -Operation LocalBuild -RepositoryRoot "<仓库根目录>"
 ```
 
-执行配置中的本地测试和构建命令，在项目标准输出位置更新已有程序。成功后把源文件指纹、产物路径和 SHA256 写入 `.git/auto-release/local-build.json`；该状态不进入 Git，并兼容读取旧目录中的收据。
+执行配置中的本地测试和构建命令，保留构建工具的原始产物，并统一复制到 `<仓库根目录>/output/<项目名><扩展名>`。`output` 目录或目标文件不存在时自动创建，已存在时覆盖；文件名不带版本号。多种扩展名分别保留，同扩展名冲突时追加序号。成功后把源文件指纹、统一产物路径和 SHA256 写入 `.git/auto-release/local-build.json`；该状态不进入 Git，并兼容读取旧目录中的收据。
 
 ### 2. CommitPush
 

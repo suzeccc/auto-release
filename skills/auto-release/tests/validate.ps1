@@ -304,6 +304,7 @@ try {
   $nodeConfig = Get-Content -Raw -Encoding UTF8 $nodeConfigPath | ConvertFrom-Json
   Assert-Equal $nodeConfig.schemaVersion 2 "Node config does not use schema v2"
   Assert-Equal $nodeConfig.automation.template "node-v1" "Node config uses the wrong template"
+  Assert-Equal $nodeConfig.prepare.localOutputDirectory "output" "Node config does not use the unified local output directory"
   Assert-Equal @($nodeConfig.version.updates).Count 3 "Node config did not constrain all root version entries"
   $nodeConfigHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $nodeConfigPath).Hash
   $nodeWorkflowHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $nodeWorkflowPath).Hash
@@ -727,6 +728,48 @@ finally {
   Remove-TestDirectory $reuseWorkflowRoot
 }
 
+$localDiscoveryRoot = New-TestDirectory "local-discovery"
+try {
+  Write-TestUtf8 (Join-Path $localDiscoveryRoot "package.json") '{"name":"detected-app","version":"1.0.0"}'
+  Write-TestUtf8 (Join-Path $localDiscoveryRoot ".codex-release.json") @'
+{
+  "schemaVersion": 1,
+  "projectType": "tauri",
+  "projectName": "DetectedApp",
+  "branch": "main",
+  "remote": "origin",
+  "tagPrefix": "v",
+  "version": {
+    "read": {
+      "path": "package.json",
+      "pattern": "\\\"version\\\"\\s*:\\s*\\\"(?<version>\\d+\\.\\d+\\.\\d+)\\\""
+    },
+    "updates": []
+  },
+  "prepare": {
+    "parallel": false,
+    "commands": [
+      {
+        "name": "Build discoverable program",
+        "command": "if not exist src-tauri\\target\\release mkdir src-tauri\\target\\release && echo detected>src-tauri\\target\\release\\DetectedApp.exe"
+      }
+    ],
+    "artifacts": []
+  },
+  "publish": {"release":{"mode":"none"}}
+}
+'@
+  & $script -Mode LocalBuild -RepositoryRoot $localDiscoveryRoot
+  $discoveredOutput = Join-Path $localDiscoveryRoot "output\DetectedApp.exe"
+  if (-not (Test-Path -LiteralPath $discoveredOutput -PathType Leaf)) {
+    throw "LocalBuild did not discover and materialize an undeclared local program"
+  }
+  Assert-Equal (Get-Content -Raw -Encoding UTF8 $discoveredOutput).Trim() "detected" "Discovered local output has the wrong content"
+}
+finally {
+  Remove-TestDirectory $localDiscoveryRoot
+}
+
 $operationsRoot = New-TestDirectory "operations"
 $operationsRemote = Join-Path ([IO.Path]::GetTempPath()) ("auto-release-operations-remote-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $operationsRemote | Out-Null
@@ -766,7 +809,11 @@ try {
       {"name":"Build local program","command":"if not exist dist mkdir dist && echo local>dist\\local-app.exe"}
     ],
     "artifacts": [
-      {"source":"dist/local-app.exe","sha256":true}
+      {
+        "source":"dist/local-app.exe",
+        "destination":"release/{tag}/local-app.exe",
+        "sha256":true
+      }
     ]
   },
   "publish": {"release":{"mode":"none"}}
@@ -781,13 +828,22 @@ try {
   $localPackage = Get-Content -Raw -Encoding UTF8 (Join-Path $operationsRoot "package.json") | ConvertFrom-Json
   Assert-Equal $localPackage.version "1.0.0" "LocalBuild changed the project version"
   if (-not (Test-Path -LiteralPath (Join-Path $operationsRoot "dist\local-app.exe") -PathType Leaf)) { throw "LocalBuild did not build the local program" }
+  $unifiedLocalProgram = Join-Path $operationsRoot "output\local-app.exe"
+  if (-not (Test-Path -LiteralPath $unifiedLocalProgram -PathType Leaf)) { throw "LocalBuild did not create the unified local output" }
+  Assert-Equal (Get-Content -Raw -Encoding UTF8 $unifiedLocalProgram).Trim() "local" "Unified local output has the wrong content"
+  if (Test-Path -LiteralPath (Join-Path $operationsRoot "release\v1.0.0\local-app.exe")) {
+    throw "LocalBuild incorrectly used the versioned release destination"
+  }
   if (-not (Test-Path -LiteralPath (Join-Path $operationsRoot ".git\auto-release\local-build.json") -PathType Leaf)) { throw "LocalBuild did not record a build receipt" }
+  $localReceipt = Get-Content -Raw -Encoding UTF8 (Join-Path $operationsRoot ".git\auto-release\local-build.json") | ConvertFrom-Json
+  Assert-Equal $localReceipt.artifacts[0].path "output/local-app.exe" "Local build receipt did not record the unified output"
 
   Remove-Item -LiteralPath (Join-Path $operationsRoot "dist\local-app.exe") -Force
   & $script -Mode Prepare -Version v1.1.0 -Summary "Skip local build test" -RepositoryRoot $operationsRoot -SkipBuild
   if (Test-Path -LiteralPath (Join-Path $operationsRoot "dist\local-app.exe")) { throw "Prepare SkipBuild still ran build commands" }
   $preparedPackage = Get-Content -Raw -Encoding UTF8 (Join-Path $operationsRoot "package.json") | ConvertFrom-Json
   Assert-Equal $preparedPackage.version "1.1.0" "Prepare SkipBuild did not update the release version"
+  Remove-Item -LiteralPath (Join-Path $operationsRoot "output") -Recurse -Force
 
   Add-Content -Encoding UTF8 -LiteralPath (Join-Path $operationsRoot "source.txt") -Value "unstaged"
   Write-TestUtf8 (Join-Path $operationsRoot "staged.txt") "staged`n"
