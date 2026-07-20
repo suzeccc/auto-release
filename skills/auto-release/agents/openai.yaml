@@ -1,0 +1,4 @@
+interface:
+  display_name: "Auto Release"
+  short_description: "为十二类常见项目自动生成 GitHub 发布工作流"
+  default_prompt: "Use $auto-release and let me choose LocalBuild, CommitPush, or Release for the current project."

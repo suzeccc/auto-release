@@ -1,9 +1,9 @@
 ---
-name: project-release-automator
+name: auto-release
 description: Detects and configures common application, library, native, mobile, desktop, and container repositories, then provides local test builds, commit-and-push, and formal GitHub releases. Supports Tauri, Node.js, Go, Python, Rust, .NET, Java, CMake, Flutter, Android, Electron, and Docker. Use when the user asks to build a local test program without changing its version, commit and push all changes with a Chinese summary, create or validate release automation, generate a tag-triggered GitHub Actions workflow, or formally publish a semantic version such as v1.2.3.
 ---
 
-# Project Release Automator
+# Auto Release
 
 只执行 `.codex-release.json` 声明的项目步骤，不猜测或复用其他仓库的配置。用户未明确操作时，显示 `LocalBuild`、`CommitPush`、`Release` 三项选择；不得把“本地打包”解释为正式发布。
 
@@ -12,7 +12,7 @@ description: Detects and configures common application, library, native, mobile,
 在仓库根目录运行独立的初始化器。`Detect` 只读，`Generate` 创建配置和工作流，`Validate` 检查二者的一致性：
 
 ```powershell
-$setup = "$env:USERPROFILE\.codex\skills\project-release-automator\scripts\setup-project.ps1"
+$setup = "$env:USERPROFILE\.codex\skills\auto-release\scripts\setup-project.ps1"
 & $setup -Mode Detect -RepositoryRoot "<仓库根目录>"
 & $setup -Mode Generate -RepositoryRoot "<仓库根目录>"
 & $setup -Mode Validate -RepositoryRoot "<仓库根目录>"
@@ -30,7 +30,7 @@ $setup = "$env:USERPROFILE\.codex\skills\project-release-automator\scripts\setup
 - 为 Docker 构建并推送 GHCR 多架构镜像，同时发布镜像摘要清单。
 - 创建草稿 GitHub Release，等待本地发布流程校验后再公开。
 
-若现有配置或工作流没有 Project Release Automator 的托管标记，生成器必须停止，禁止覆盖。重复生成托管文件必须幂等。配置和工作流属于项目，应与代码一起提交；禁止写入 Token、密钥或账号凭据。完整字段见 [配置参考](references/config.md)。
+若现有配置或工作流没有 Auto Release 或旧版 Project Release Automator 的托管标记，生成器必须停止，禁止覆盖。重复生成托管文件必须幂等。配置和工作流属于项目，应与代码一起提交；禁止写入 Token、密钥或账号凭据。完整字段见 [配置参考](references/config.md)。
 
 生成后运行 `Validate`，再运行 `Plan`。在配置可解释且计划正确前不得进入 `Prepare`。
 
@@ -39,7 +39,7 @@ $setup = "$env:USERPROFILE\.codex\skills\project-release-automator\scripts\setup
 统一入口：
 
 ```powershell
-$invoke = "$env:USERPROFILE\.codex\skills\project-release-automator\scripts\invoke-release.ps1"
+$invoke = "$env:USERPROFILE\.codex\skills\auto-release\scripts\invoke-release.ps1"
 ```
 
 ### 1. LocalBuild
@@ -50,7 +50,7 @@ $invoke = "$env:USERPROFILE\.codex\skills\project-release-automator\scripts\invo
 & $invoke -Operation LocalBuild -RepositoryRoot "<仓库根目录>"
 ```
 
-执行配置中的本地测试和构建命令，在项目标准输出位置更新已有程序。成功后把源文件指纹、产物路径和 SHA256 写入 `.git/project-release-automator/local-build.json`；该状态不进入 Git。
+执行配置中的本地测试和构建命令，在项目标准输出位置更新已有程序。成功后把源文件指纹、产物路径和 SHA256 写入 `.git/auto-release/local-build.json`；该状态不进入 Git，并兼容读取旧目录中的收据。
 
 ### 2. CommitPush
 
@@ -84,7 +84,7 @@ $notes = @"
 
 - Skill 托管工作流：更新或复用。
 - 兼容的人工发布工作流：用 `-WorkflowPolicy ReuseCompatible` 复用并设为非托管。
-- 不兼容或普通 CI：用 `-WorkflowPolicy CreateSeparate` 保留原文件并创建 `.github/workflows/project-release.yml`。
+- 不兼容或普通 CI：用 `-WorkflowPolicy CreateSeparate` 保留原文件并创建 `.github/workflows/auto-release.yml`。
 - 未选择策略：默认 `Stop`，绝不覆盖人工工作流。
 
 ## 底层发布顺序
@@ -96,7 +96,7 @@ $notes = @"
 运行：
 
 ```powershell
-& "$env:USERPROFILE\.codex\skills\project-release-automator\scripts\release.ps1" `
+& "$env:USERPROFILE\.codex\skills\auto-release\scripts\release.ps1" `
   -Mode Plan -Version vX.Y.Z -Summary "一句中文总结。" `
   -RepositoryRoot "<仓库根目录>"
 ```
@@ -113,7 +113,7 @@ $notes = @"
 使用同一版本和总结运行：
 
 ```powershell
-& "$env:USERPROFILE\.codex\skills\project-release-automator\scripts\release.ps1" `
+& "$env:USERPROFILE\.codex\skills\auto-release\scripts\release.ps1" `
   -Mode Prepare -Version vX.Y.Z -Summary "一句中文总结。" `
   -RepositoryRoot "<仓库根目录>"
 ```
@@ -134,7 +134,7 @@ $releaseNotes = @"
 - 修复：第二项用户可感知重点。
 "@
 
-& "$env:USERPROFILE\.codex\skills\project-release-automator\scripts\release.ps1" `
+& "$env:USERPROFILE\.codex\skills\auto-release\scripts\release.ps1" `
   -Mode Publish -Version vX.Y.Z -Summary "一句中文总结。" `
   -ReleaseNotes $releaseNotes `
   -RepositoryRoot "<仓库根目录>"

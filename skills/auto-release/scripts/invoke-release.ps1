@@ -23,7 +23,7 @@ param(
 
   [string]$WorkflowPath = ".github/workflows/release.yml",
 
-  [string]$SeparateWorkflowPath = ".github/workflows/project-release.yml"
+  [string]$SeparateWorkflowPath = ".github/workflows/auto-release.yml"
 )
 
 $ErrorActionPreference = "Stop"
@@ -254,7 +254,7 @@ function Ensure-ReleaseAutomation([bool]$UpdateManaged) {
   }
 
   $settings = Get-WorkflowSettings $config
-  if ($UpdateManaged -and $settings.Managed -and $settings.Generator -eq "project-release-automator") {
+  if ($UpdateManaged -and $settings.Managed -and $settings.Generator -in @("auto-release", "project-release-automator")) {
     & $setupScript -Mode Generate -ProjectType $settings.ProjectType -RepositoryRoot $script:ResolvedRepositoryRoot `
       -ConfigPath $ConfigPath -WorkflowPath $settings.Path -ExistingWorkflowPolicy Stop
   }
@@ -327,9 +327,11 @@ function Get-SourceFingerprint($Config) {
   finally { $sha.Dispose() }
 }
 
-function Get-ReceiptPath {
-  $directory = Join-Path (Get-GitDirectory) "project-release-automator"
-  if (-not (Test-Path -LiteralPath $directory -PathType Container)) { New-Item -ItemType Directory -Path $directory | Out-Null }
+function Get-ReceiptPath([string]$DirectoryName = "auto-release", [bool]$CreateDirectory = $true) {
+  $directory = Join-Path (Get-GitDirectory) $DirectoryName
+  if ($CreateDirectory -and -not (Test-Path -LiteralPath $directory -PathType Container)) {
+    New-Item -ItemType Directory -Path $directory | Out-Null
+  }
   return Join-Path $directory "local-build.json"
 }
 
@@ -393,7 +395,10 @@ function Write-LocalBuildReceipt($Config) {
 }
 
 function Test-LocalBuildFresh($Config) {
-  $path = Get-ReceiptPath
+  $path = Get-ReceiptPath "auto-release" $false
+  if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+    $path = Get-ReceiptPath "project-release-automator" $false
+  }
   if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $false }
   try { $receipt = Get-Content -Raw -Encoding UTF8 -LiteralPath $path | ConvertFrom-Json }
   catch { return $false }

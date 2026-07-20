@@ -1,4 +1,4 @@
-# Project Release Automator
+# Auto Release
 
 一个通用的 Codex Skill，用于自动识别项目、生成发布配置与 GitHub Actions，并提供本地测试构建、全部更改提交推送和正式发布三种可复现操作。
 
@@ -7,7 +7,7 @@
 在 PowerShell 中运行：
 
 ```powershell
-python -X utf8 "$env:USERPROFILE\.codex\skills\.system\skill-installer\scripts\install-skill-from-github.py" --repo suzeccc/project-release-automator --path skills/project-release-automator
+python -X utf8 "$env:USERPROFILE\.codex\skills\.system\skill-installer\scripts\install-skill-from-github.py" --repo suzeccc/auto-release --path skills/auto-release
 ```
 
 安装后请开启一个新的 Codex 任务，让 Skill 列表重新加载。
@@ -29,18 +29,18 @@ python -X utf8 "$env:USERPROFILE\.codex\skills\.system\skill-installer\scripts\i
 首次使用时可直接要求 Codex“为这个项目创建发布工作流”，或手动运行：
 
 ```powershell
-$setup = "$env:USERPROFILE\.codex\skills\project-release-automator\scripts\setup-project.ps1"
+$setup = "$env:USERPROFILE\.codex\skills\auto-release\scripts\setup-project.ps1"
 & $setup -Mode Detect -RepositoryRoot "<仓库根目录>"
 & $setup -Mode Generate -RepositoryRoot "<仓库根目录>"
 & $setup -Mode Validate -RepositoryRoot "<仓库根目录>"
 ```
 
-生成器支持 Tauri、Node.js、Go、Python、Rust、.NET、Java、CMake、Flutter、Android、Electron 和 Docker，创建项目级 `.codex-release.json` 与标签触发的 `.github/workflows/release.yml`。若工作流由人工维护，生成器会拒绝覆盖。完整字段说明见 [`skills/project-release-automator/references/config.md`](skills/project-release-automator/references/config.md)。
+生成器支持 Tauri、Node.js、Go、Python、Rust、.NET、Java、CMake、Flutter、Android、Electron 和 Docker，创建项目级 `.codex-release.json` 与标签触发的 `.github/workflows/release.yml`。若工作流由人工维护，生成器会拒绝覆盖。完整字段说明见 [`skills/auto-release/references/config.md`](skills/auto-release/references/config.md)。
 
 ## 三种操作
 
 ```powershell
-$invoke = "$env:USERPROFILE\.codex\skills\project-release-automator\scripts\invoke-release.ps1"
+$invoke = "$env:USERPROFILE\.codex\skills\auto-release\scripts\invoke-release.ps1"
 
 # 1. 不改版本，仅构建本地测试程序
 & $invoke -Operation LocalBuild -RepositoryRoot "<仓库根目录>"
@@ -53,9 +53,9 @@ $invoke = "$env:USERPROFILE\.codex\skills\project-release-automator\scripts\invo
   -ReleaseNotes "<中文 Release Notes>" -RepositoryRoot "<仓库根目录>"
 ```
 
-`LocalBuild` 在 `.git/project-release-automator/local-build.json` 保存本地构建指纹。正式发布时源文件和产物未变化即可跳过重复的本地构建，但 GitHub Actions 仍会重新生成正式发布包。
+`LocalBuild` 在 `.git/auto-release/local-build.json` 保存本地构建指纹。正式发布时源文件和产物未变化即可跳过重复的本地构建，但 GitHub Actions 仍会重新生成正式发布包。
 
-人工工作流默认不覆盖：可选择兼容复用，或保留原工作流并新建 `.github/workflows/project-release.yml`。
+人工工作流默认不覆盖：可选择兼容复用，或保留原工作流并新建 `.github/workflows/auto-release.yml`。
 
 ## 支持能力
 
@@ -85,12 +85,12 @@ $invoke = "$env:USERPROFILE\.codex\skills\project-release-automator\scripts\invo
 ## 验证
 
 ```powershell
-& ".\skills\project-release-automator\tests\validate.ps1"
+& ".\skills\auto-release\tests\validate.ps1"
 ```
 
 ## English
 
-`project-release-automator` detects twelve common project families, safely generates repository-specific release configuration and tag-triggered GitHub Actions, then packages and publishes releases from Windows. Human-managed workflows are never overwritten.
+`auto-release` detects twelve common project families, safely generates repository-specific release configuration and tag-triggered GitHub Actions, then packages and publishes releases from Windows. Human-managed workflows are never overwritten.
 
 ## License
 
