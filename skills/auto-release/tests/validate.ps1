@@ -838,6 +838,31 @@ try {
   $localReceipt = Get-Content -Raw -Encoding UTF8 (Join-Path $operationsRoot ".git\auto-release\local-build.json") | ConvertFrom-Json
   Assert-Equal $localReceipt.artifacts[0].path "output/local-app.exe" "Local build receipt did not record the unified output"
 
+  $lockingProcess = $null
+  try {
+    Copy-Item -LiteralPath (Join-Path $env:WINDIR "System32\PING.EXE") -Destination $unifiedLocalProgram -Force
+    $lockingProcess = Start-Process -FilePath $unifiedLocalProgram -ArgumentList @("-n", "60", "127.0.0.1") -WindowStyle Hidden -PassThru
+    Start-Sleep -Milliseconds 500
+    $lockingProcess.Refresh()
+    if ($lockingProcess.HasExited) { throw "Locking fixture process exited before LocalBuild" }
+
+    & $invokeScript -Operation LocalBuild -RepositoryRoot $operationsRoot
+    $lockingProcess.Refresh()
+    if (-not $lockingProcess.HasExited) { throw "LocalBuild did not stop the process using the unified output" }
+    Assert-Equal (Get-Content -Raw -Encoding UTF8 $unifiedLocalProgram).Trim() "local" "LocalBuild did not overwrite the unlocked canonical output"
+    if (Test-Path -LiteralPath (Join-Path $operationsRoot "output\local-app-2.exe")) {
+      throw "LocalBuild created a numeric fallback instead of replacing the occupied canonical output"
+    }
+  }
+  finally {
+    if ($lockingProcess) {
+      $lockingProcess.Refresh()
+      if (-not $lockingProcess.HasExited) {
+        Stop-Process -Id $lockingProcess.Id -Force -ErrorAction SilentlyContinue
+      }
+    }
+  }
+
   Remove-Item -LiteralPath (Join-Path $operationsRoot "dist\local-app.exe") -Force
   & $script -Mode Prepare -Version v1.1.0 -Summary "Skip local build test" -RepositoryRoot $operationsRoot -SkipBuild
   if (Test-Path -LiteralPath (Join-Path $operationsRoot "dist\local-app.exe")) { throw "Prepare SkipBuild still ran build commands" }
@@ -883,6 +908,7 @@ Assert-Match $scriptSource 'Expand-ConfigTokens \(\[string\]\$_.command\)' "prep
 Assert-Match $scriptSource 'publish-draft.*create.*none' "missing release modes"
 Assert-Match $scriptSource 'schemaVersion -notin @\(1, 2\)' "release runner does not accept schema v1 and v2"
 Assert-Match $scriptSource 'LocalBuild' "release runner does not support local builds"
+Assert-Match $scriptSource 'Stop-ProcessesUsingLocalArtifacts' "LocalBuild does not stop processes using local artifacts"
 Assert-Match $scriptSource 'SkipBuild' "release runner cannot reuse a current local build"
 Assert-Match $scriptSource 'AllowExistingHead' "release runner cannot publish without an unnecessary empty commit"
 if ($scriptSource -match 'D:\\QiLin|CopyShare|suzeccc') {

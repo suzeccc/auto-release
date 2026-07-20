@@ -41,7 +41,7 @@ $setup = "$env:USERPROFILE\.codex\skills\auto-release\scripts\setup-project.ps1"
   -Summary "一句中文总结" -ReleaseNotes "<中文 Release Notes>"
 ```
 
-`LocalBuild` 调用 `prepare.commands`，但不运行 `version.updates`。构建产物统一复制到 `prepare.localOutputDirectory`，默认是 `output`；目标文件使用 `<projectName><扩展名>`，不含版本号，目录或文件不存在时自动创建。`prepare.artifacts[].localName` 可覆盖单个本地产物文件名，正式发布使用的 `destination` 不受影响。成功后在 `.git/auto-release/local-build.json` 保存忽略发布版本值的源文件指纹、统一产物路径和 SHA256，并兼容读取旧目录中的收据。正式发布仅在收据、指纹和所有产物哈希均有效时跳过本地构建。
+`LocalBuild` 调用 `prepare.commands`，但不运行 `version.updates`。构建产物统一复制到 `prepare.localOutputDirectory`，默认是 `output`；目标文件使用 `<projectName><扩展名>`，不含版本号，目录或文件不存在时自动创建。若源 EXE 或目标 EXE 正由本仓库程序运行，执行器按完整路径强制终止对应进程并等待退出，然后覆盖规范文件名，不创建数字后缀备用文件。`prepare.artifacts[].localName` 可覆盖单个本地产物文件名，正式发布使用的 `destination` 不受影响。成功后在 `.git/auto-release/local-build.json` 保存忽略发布版本值的源文件指纹、统一产物路径和 SHA256，并兼容读取旧目录中的收据。正式发布仅在收据、指纹和所有产物哈希均有效时跳过本地构建。
 
 `CommitPush` 和 `Release` 明确执行全量暂存，包含已暂存、未暂存、删除和未跟踪文件，并遵守 `.gitignore`。提交前拒绝 Git 冲突、明显凭据文件、私钥和常见 Token；失败时恢复原暂存区。
 

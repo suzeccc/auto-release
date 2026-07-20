@@ -553,6 +553,70 @@ function Get-DiscoveredLocalArtifactFiles {
   return @($files | Sort-Object FullName -Unique)
 }
 
+function Stop-ProcessesUsingLocalArtifacts([string[]]$Paths) {
+  if ($env:OS -ne "Windows_NT") { return }
+  $targets = @{}
+  foreach ($path in @($Paths | Where-Object { $_ })) {
+    if ([IO.Path]::GetExtension($path) -ne ".exe") { continue }
+    $targets[(Get-NormalizedPath $path).ToLowerInvariant()] = $true
+  }
+  if ($targets.Count -eq 0) { return }
+
+  $stopped = @()
+  foreach ($process in @(Get-Process)) {
+    if ($process.Id -eq $PID) { continue }
+    try { $processPath = [string]$process.Path }
+    catch { continue }
+    if (-not $processPath) { continue }
+    $normalizedProcessPath = (Get-NormalizedPath $processPath).ToLowerInvariant()
+    if (-not $targets.ContainsKey($normalizedProcessPath)) { continue }
+
+    Write-Host "Stopping process $($process.ProcessName) ($($process.Id)) using local artifact: $processPath"
+    try {
+      Stop-Process -Id $process.Id -Force -ErrorAction Stop
+      $stopped += [pscustomobject]@{ Id = $process.Id; Path = $processPath }
+    }
+    catch {
+      if (Get-Process -Id $process.Id -ErrorAction SilentlyContinue) { throw }
+    }
+  }
+
+  foreach ($entry in $stopped) {
+    $deadline = [DateTime]::UtcNow.AddSeconds(10)
+    while (Get-Process -Id $entry.Id -ErrorAction SilentlyContinue) {
+      if ([DateTime]::UtcNow -ge $deadline) {
+        throw "Timed out stopping process $($entry.Id) using local artifact: $($entry.Path)"
+      }
+      Start-Sleep -Milliseconds 100
+    }
+  }
+}
+
+function Get-LocalBuildExecutablePaths {
+  $paths = @()
+  $prepare = $script:Config.prepare
+  $outputRelative = [string](Get-OptionalProperty $prepare "localOutputDirectory" "output")
+  if ([string]::IsNullOrWhiteSpace($outputRelative)) { $outputRelative = "output" }
+  $outputDirectory = Resolve-RepositoryPath $outputRelative
+  if (Test-Path -LiteralPath $outputDirectory -PathType Container) {
+    $paths += @(Get-ChildItem -LiteralPath $outputDirectory -File -Filter "*.exe" | ForEach-Object { $_.FullName })
+  }
+
+  foreach ($artifact in @(Get-OptionalProperty $prepare "artifacts" @())) {
+    $sourceRelative = Expand-ConfigTokens ([string]$artifact.source)
+    $source = Resolve-RepositoryPath $sourceRelative
+    if ([IO.Path]::GetExtension($source) -eq ".exe" -and (Test-Path -LiteralPath $source -PathType Leaf)) {
+      $paths += $source
+    }
+  }
+  $paths += @(Get-DiscoveredLocalArtifactFiles | Where-Object { $_.Extension -eq ".exe" } | ForEach-Object { $_.FullName })
+  return @($paths | Sort-Object -Unique)
+}
+
+function Stop-LocalBuildProcesses {
+  Stop-ProcessesUsingLocalArtifacts @(Get-LocalBuildExecutablePaths)
+}
+
 function Get-LocalArtifactDestination([IO.FileInfo]$Source, $Artifact, [hashtable]$UsedNames) {
   $prepare = $script:Config.prepare
   $outputRelative = [string](Get-OptionalProperty $prepare "localOutputDirectory" "output")
@@ -622,6 +686,9 @@ function Get-PreparedArtifacts([bool]$LocalBuild = $false) {
       }
     }
     if (-not $source.Equals($destination, [StringComparison]::OrdinalIgnoreCase)) {
+      if ($LocalBuild) {
+        Stop-ProcessesUsingLocalArtifacts @($destination)
+      }
       $destinationDirectory = Split-Path -Parent $destination
       New-Item -ItemType Directory -Force -Path $destinationDirectory | Out-Null
       Copy-Item -LiteralPath $source -Destination $destination -Force
@@ -875,6 +942,7 @@ function Invoke-LocalBuild {
   Assert-RepositoryRoot
   $currentVersion = Get-CurrentVersion
   Write-Host "Local build: $($script:Config.projectName) $currentVersion"
+  Stop-LocalBuildProcesses
   Invoke-ConfiguredCommands
   $artifacts = @(Get-PreparedArtifacts $true)
   Write-Host "Local build completed without changing the project version"

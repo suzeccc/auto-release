@@ -53,7 +53,7 @@ $invoke = "$env:USERPROFILE\.codex\skills\auto-release\scripts\invoke-release.ps
   -ReleaseNotes "<中文 Release Notes>" -RepositoryRoot "<仓库根目录>"
 ```
 
-`LocalBuild` 会自动创建 `<仓库根目录>/output`，把本地构建产物复制为不含版本号的 `output/<项目名><扩展名>`；例如 `output/CopyShare.exe`。构建工具的原始产物仍保留，同时在 `.git/auto-release/local-build.json` 保存构建指纹。正式发布时源文件和产物未变化即可跳过重复的本地构建，但 GitHub Actions 仍会重新生成正式发布包。
+`LocalBuild` 会自动创建 `<仓库根目录>/output`，把本地构建产物复制为不含版本号的 `output/<项目名><扩展名>`；例如 `output/CopyShare.exe`。若同路径的 EXE 正在运行，先按完整路径强制终止占用进程，再覆盖标准文件，禁止改用 `-2` 等备用文件名。构建工具的原始产物仍保留，同时在 `.git/auto-release/local-build.json` 保存构建指纹。正式发布时源文件和产物未变化即可跳过重复的本地构建，但 GitHub Actions 仍会重新生成正式发布包。
 
 人工工作流默认不覆盖：可选择兼容复用，或保留原工作流并新建 `.github/workflows/auto-release.yml`。
 
