@@ -9,10 +9,11 @@
 | 你想做的事 | Auto Release 会做什么 | 不会做什么 |
 |---|---|---|
 | 本地测试打包 | 构建当前项目，把结果放到 `output/` | 不改版本、不提交、不推送 |
+| 检查忽略规则 | 深度检查并补全 `.gitignore`，可停止跟踪本地产物 | 不删除本地文件、不重写历史 |
 | 提交并推送 | 检查改动和敏感文件，生成提交信息，推送当前分支 | 不自动合并、不变基、不强推 |
 | 正式发布 | 更新版本、测试、构建、提交、打标签、运行 GitHub Actions、发布 GitHub Release | 发布失败时不会公开不完整的 Release |
 
-如果你的表达不够明确，Codex 会让你从 `LocalBuild`、`CommitPush`、`Release` 三种操作中选择，不会把“本地打包”误认为正式发布。
+如果你的表达不够明确，Codex 会让你从 `LocalBuild`、`Ignore`、`CommitPush`、`Release` 四种操作中选择，不会把“本地打包”误认为正式发布。
 
 ## 支持哪些项目
 
@@ -61,6 +62,14 @@ python -X utf8 "$env:USERPROFILE\.codex\skills\.system\skill-installer\scripts\i
 检查这些修改，生成合适的提交信息，然后提交并推送
 ```
 
+### 想检查不该上传的文件
+
+```text
+忽略
+```
+
+只输入“忽略”时，Auto Release 先执行只读审计并展示计划，不会直接修改 `.gitignore`。
+
 ### 想创建自动发布工作流
 
 ```text
@@ -90,7 +99,21 @@ python -X utf8 "$env:USERPROFILE\.codex\skills\.system\skill-installer\scripts\i
 
 需要忽略缓存重新构建时，告诉 Codex“强制重新打包”。
 
-### 2. CommitPush：提交并推送
+### 2. Ignore：检查并补全忽略规则
+
+适合提交项目或公开 GitHub 仓库前检查本地文件、构建产物和缓存。
+
+- 识别项目类型和对应工具链产物。
+- 检查现有 `.gitignore`、Git 本地排除规则和当前文件状态。
+- 区分安全补全、需要确认、敏感文件和必须保留文件。
+- 默认只生成计划，不修改工作区。
+- 可以只补全规则，也可以停止跟踪已经上传的生成文件。
+- 停止跟踪时保留本地文件并验证 SHA256。
+- 不删除文件、不提交、不推送、不重写历史。
+
+`.gitignore` 对已经跟踪的文件无效；这类文件必须明确选择“补全并停止跟踪”。任何应用操作失败都会恢复 `.gitignore` 和原暂存区。
+
+### 3. CommitPush：提交并推送
 
 适合完成一轮修改后，把全部安全改动提交到当前分支。
 
@@ -120,7 +143,7 @@ perf(frontend): 优化按需加载与运行时开销
 
 两个提交都在临时事务分支成功创建并通过检查后，Auto Release 才会把它们一起推送。无法可靠分类时自动退回一个提交，不会为了增加提交数量强行拆分。
 
-### 3. Release：正式发布
+### 4. Release：正式发布
 
 适合发布稳定版本，例如 `v1.2.3`。
 
@@ -219,6 +242,12 @@ $invoke = "$env:USERPROFILE\.codex\skills\auto-release\scripts\invoke-release.ps
 # 强制重新打包
 & $invoke -Operation LocalBuild -ForceRebuild -RepositoryRoot "<仓库根目录>"
 
+# 只读审计 Git ignore
+& $invoke -Operation Ignore -IgnoreMode Audit -RepositoryRoot "<仓库根目录>"
+
+# 补全规则并停止跟踪生成文件，但保留本地文件
+& $invoke -Operation Ignore -IgnoreMode ApplyAndUntrack -RepositoryRoot "<仓库根目录>"
+
 # 提交并推送
 & $invoke -Operation CommitPush -Summary "chore: 更新项目" -RepositoryRoot "<仓库根目录>"
 
@@ -237,6 +266,7 @@ $invoke = "$env:USERPROFILE\.codex\skills\auto-release\scripts\invoke-release.ps
 - `-WhatIf`：只预览，不修改文件、Git 或 GitHub。
 - `-OutputFormat Json`：输出适合脚本处理的 JSON。
 - `-CommitStrategy AutoSplit`：按计划创建多个事务化提交并统一推送。
+- `-IgnoreMode Audit|Apply|ApplyAndUntrack`：检查、应用或应用并停止跟踪。
 - `-ProjectType`：多种项目清单并存时明确指定类型。
 - `-WorkflowPolicy ReuseCompatible`：复用兼容的人工工作流。
 - `-WorkflowPolicy CreateSeparate`：保留人工工作流并新建发布工作流。
