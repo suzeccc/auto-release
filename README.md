@@ -1,6 +1,39 @@
 # Auto Release
 
-一个通用的 Codex Skill，用于自动识别项目、生成发布配置与 GitHub Actions，并提供本地测试构建、提交风格自适应的全部更改推送和正式发布三种可复现操作。
+让 Codex 帮你完成**本地打包、提交推送和 GitHub 正式发布**。
+
+你只需要说明想做什么，Auto Release 会识别项目类型、选择正确的构建方式，并在需要时创建 GitHub Actions 发布工作流。
+
+## 它能做什么
+
+| 你想做的事 | Auto Release 会做什么 | 不会做什么 |
+|---|---|---|
+| 本地测试打包 | 构建当前项目，把结果放到 `output/` | 不改版本、不提交、不推送 |
+| 提交并推送 | 检查改动和敏感文件，生成提交信息，推送当前分支 | 不自动合并、不变基、不强推 |
+| 正式发布 | 更新版本、测试、构建、提交、打标签、运行 GitHub Actions、发布 GitHub Release | 发布失败时不会公开不完整的 Release |
+
+如果你的表达不够明确，Codex 会让你从 `LocalBuild`、`CommitPush`、`Release` 三种操作中选择，不会把“本地打包”误认为正式发布。
+
+## 支持哪些项目
+
+Auto Release 当前支持 12 类常见项目：
+
+| 类型 | 典型发布结果 |
+|---|---|
+| Tauri | Windows 安装包、macOS DMG、Linux 包 |
+| Node.js | npm `.tgz` 包 |
+| Go | Windows、Linux、macOS 的 amd64/arm64 程序 |
+| Python | wheel 和 sdist |
+| Rust | `.crate` 包 |
+| .NET | `.nupkg` 包 |
+| Java | Maven 或 Gradle 生成的 `.jar` |
+| CMake | Windows、Linux、macOS 的多架构压缩包 |
+| Flutter | 移动端、桌面端和 Web 构建 |
+| Android | APK 和 AAB |
+| Electron | Windows、Linux、macOS 的多架构压缩包 |
+| Docker | 推送到 GHCR 的多架构镜像 |
+
+实际生成多少个安装包或产物，取决于项目类型和它对应的平台矩阵。
 
 ## 安装
 
@@ -10,113 +43,221 @@
 python -X utf8 "$env:USERPROFILE\.codex\skills\.system\skill-installer\scripts\install-skill-from-github.py" --repo suzeccc/auto-release --path skills/auto-release
 ```
 
-安装后请开启一个新的 Codex 任务，让 Skill 列表重新加载。
+安装完成后，重新打开一个 Codex 任务，让 Skill 列表刷新。
 
-## 使用
+## 最快使用方式
 
-在任意本地 Git 项目中告诉 Codex：
+进入任意本地 Git 项目，直接告诉 Codex：
+
+### 只想在本地试一下
 
 ```text
-打包 v1.2.3
+本地打包这个项目，不要改版本，也不要提交
 ```
 
-或：
+### 想提交当前改动
+
+```text
+检查这些修改，生成合适的提交信息，然后提交并推送
+```
+
+### 想创建自动发布工作流
+
+```text
+给这个项目创建 GitHub Release 工作流
+```
+
+### 想正式发布新版本
 
 ```text
 正式发布 v1.2.3
 ```
 
-首次使用时可直接要求 Codex“为这个项目创建发布工作流”，或手动运行：
-
-```powershell
-$setup = "$env:USERPROFILE\.codex\skills\auto-release\scripts\setup-project.ps1"
-& $setup -Mode Detect -RepositoryRoot "<仓库根目录>"
-& $setup -Mode GenerateLocal -RepositoryRoot "<仓库根目录>"
-& $setup -Mode Generate -RepositoryRoot "<仓库根目录>"
-& $setup -Mode Validate -RepositoryRoot "<仓库根目录>"
-```
-
-生成器支持 Tauri、Node.js、Go、Python、Rust、.NET、Java、CMake、Flutter、Android、Electron 和 Docker。`GenerateLocal` 只创建本地构建配置，不读取或创建 GitHub 工作流；`Generate` 创建完整 `.codex-release.json` 与标签触发的 `.github/workflows/release.yml`。若工作流由人工维护，完整生成器会拒绝覆盖。完整字段说明见 [`skills/auto-release/references/config.md`](skills/auto-release/references/config.md)。
+首次使用时，Auto Release 会先识别项目并生成项目专用配置。以后会复用这份配置，不会每次重新猜测。
 
 ## 三种操作
 
+### 1. LocalBuild：本地测试打包
+
+适合开发过程中快速验证程序是否能正常构建。
+
+- 不修改项目版本。
+- 不创建 Git 提交。
+- 不推送代码或标签。
+- 产物统一放到 `output/<项目名><扩展名>`。
+- 文件名不包含版本号，方便反复覆盖和测试。
+- 源码与产物未变化时，会复用上次有效结果。
+
+需要忽略缓存重新构建时，告诉 Codex“强制重新打包”。
+
+### 2. CommitPush：提交并推送
+
+适合完成一轮修改后，把全部安全改动提交到当前分支。
+
+- 同时处理已暂存、未暂存、删除和未跟踪文件。
+- 遵守 `.gitignore`。
+- 发现 `.env`、私钥、凭据或常见 Token 时停止。
+- 自动分析最近提交风格。
+- 风格无法确定时回退到 Conventional Commits。
+- 能把不同目的的改动分类成 2 至 4 个独立提交，再一次性推送。
+- 分类或任一提交失败时恢复原分支和原有改动，不推送半成品。
+- 远程分支领先或发生分叉时停止，不擅自处理历史。
+
+Auto Release 使用 Conventional Commits 时，类型和可选范围使用英文，说明使用中文，例如：
+
+```text
+feat: 新增自动发布工作流
+fix(release): 修复标签发布失败
+docs: 更新安装说明
+```
+
+例如同时修改 `.gitignore` 和前端性能代码时，可以自动形成：
+
+```text
+chore(repo): 停止跟踪本地预览与开发产物
+perf(frontend): 优化按需加载与运行时开销
+```
+
+两个提交都在临时事务分支成功创建并通过检查后，Auto Release 才会把它们一起推送。无法可靠分类时自动退回一个提交，不会为了增加提交数量强行拆分。
+
+### 3. Release：正式发布
+
+适合发布稳定版本，例如 `v1.2.3`。
+
+Auto Release 会按顺序执行：
+
+1. 检查项目、分支、远程仓库和目标版本。
+2. 更新项目中的版本文件。
+3. 运行测试和本地构建。
+4. 检查构建产物与敏感文件。
+5. 提交版本变更。
+6. 创建并原子推送 Git 标签。
+7. 等待 GitHub Actions 构建各平台正式包。
+8. 校验产物完整性。
+9. 公开已经验证的 GitHub Release。
+
+任何关键步骤失败都会停止；不会强推、覆盖旧标签或公开不完整的 Release。
+
+## 首次使用会生成什么
+
+完整发布模式通常会在你的项目中生成两个文件：
+
+```text
+.codex-release.json
+.github/workflows/release.yml
+```
+
+- `.codex-release.json`：记录这个项目如何读取版本、测试、构建和发布。
+- `release.yml`：标签触发的 GitHub Actions 正式发布工作流。
+
+这两个文件属于你的项目，建议与代码一起提交。
+
+如果只执行本地打包，Auto Release 只生成本地构建配置，不会创建 GitHub 工作流。
+
+## 不会覆盖你的工作流
+
+如果 `.github/workflows/release.yml` 已经由你维护，Auto Release 默认停止，不会直接覆盖。
+
+你可以选择：
+
+- **兼容复用**：现有工作流已经具备标签触发、发布权限和草稿 Release 能力时直接使用。
+- **另建工作流**：保留原文件，创建 `.github/workflows/auto-release.yml`。
+- **停止操作**：什么都不改，由你决定后续方案。
+
+由 Auto Release 自己生成并带有托管标记的工作流，才允许后续自动更新。
+
+## 常见问题
+
+### 适用于所有项目吗？
+
+不是“任何项目都无需配置”。它能自动处理上表中的 12 类常见项目。复杂单体仓库、多种项目清单并存或自定义构建系统，可能需要明确指定项目类型或调整 `.codex-release.json`。
+
+### 会自动创建 GitHub Actions 吗？
+
+会。选择正式发布或要求创建发布工作流时会生成；只做本地打包时不会生成。
+
+### 一次能发布多少个安装包？
+
+数量由项目类型决定。例如 Tauri 会生成五类桌面目标，Go 会生成六个系统/架构目标；Node.js 通常生成一个 `.tgz`。其他类型按照各自平台矩阵生成。
+
+### 会改我的版本号吗？
+
+`LocalBuild` 不会。只有正式 `Release` 才会更新版本。
+
+### 会覆盖已有标签或强制推送吗？
+
+不会。已有本地或远程标签、远程分叉、构建失败都会让发布停止。
+
+### 提交信息必须是英文吗？
+
+不需要全部使用英文。Auto Release 优先沿用仓库最近的提交格式；使用 Conventional Commits 时采用英文类型加中文说明，例如 `feat: 新增导出功能`。
+
+## 高级用法
+
+<details>
+<summary>查看 PowerShell 命令</summary>
+
 ```powershell
+$setup = "$env:USERPROFILE\.codex\skills\auto-release\scripts\setup-project.ps1"
 $invoke = "$env:USERPROFILE\.codex\skills\auto-release\scripts\invoke-release.ps1"
 
-# 1. 不改版本，仅构建本地测试程序
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File $invoke -Operation LocalBuild -RepositoryRoot "<仓库根目录>"
+# 识别项目，只读
+& $setup -Mode Detect -RepositoryRoot "<仓库根目录>"
 
-# 忽略已有有效构建记录，强制重新构建；依赖仍仅在锁文件变化时重新安装
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File $invoke -Operation LocalBuild -ForceRebuild -RepositoryRoot "<仓库根目录>"
+# 只生成本地构建配置
+& $setup -Mode GenerateLocal -RepositoryRoot "<仓库根目录>"
 
-# 只预览，不修改文件、不构建、不提交、不推送
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File $invoke -Operation LocalBuild -WhatIf -RepositoryRoot "<仓库根目录>"
+# 生成完整配置与 GitHub Actions
+& $setup -Mode Generate -RepositoryRoot "<仓库根目录>"
 
-# 供脚本或 CI 消费的单行 JSON 结果
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File $invoke -Operation LocalBuild -OutputFormat Json -RepositoryRoot "<仓库根目录>"
+# 校验现有配置和工作流
+& $setup -Mode Validate -RepositoryRoot "<仓库根目录>"
 
-# 2. 先查看最近提交风格，再提交全部更改并推送当前分支
-$style = "$env:USERPROFILE\.codex\skills\auto-release\scripts\commit-style.ps1"
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File $style -RepositoryRoot "<仓库根目录>"
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File $invoke -Operation CommitPush -Summary "一句符合分析结果的中文总结" -RepositoryRoot "<仓库根目录>"
+# 本地测试打包
+& $invoke -Operation LocalBuild -RepositoryRoot "<仓库根目录>"
 
-# 3. 构建全部发布包并正式发布 GitHub
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File $invoke -Operation Release -Version v1.2.3 -Summary "chore(release): 一句中文总结" `
+# 强制重新打包
+& $invoke -Operation LocalBuild -ForceRebuild -RepositoryRoot "<仓库根目录>"
+
+# 提交并推送
+& $invoke -Operation CommitPush -Summary "chore: 更新项目" -RepositoryRoot "<仓库根目录>"
+
+# 按 Codex 生成的计划创建多个提交并统一推送
+& $invoke -Operation CommitPush -CommitStrategy AutoSplit `
+  -CommitPlanPath "<仓库根目录>/.git/auto-release/commit-plan.json" `
+  -RepositoryRoot "<仓库根目录>"
+
+# 正式发布
+& $invoke -Operation Release -Version v1.2.3 -Summary "chore(release): 发布 v1.2.3" `
   -ReleaseNotes "<中文 Release Notes>" -RepositoryRoot "<仓库根目录>"
 ```
 
-`LocalBuild` 只校验本地版本、命令和产物配置，不要求 GitHub 工作流具备标签触发器。它会自动创建 `<仓库根目录>/output`，把本地构建产物复制为不含版本号的 `output/<项目名><扩展名>`；例如 `output/CopyShare.exe`。目录名和文件名都禁止包含版本或标签。正式 `Release` 使用 GitHub Actions 草稿发布时，本地验证产物也写入同一个规范路径，不创建 `output/v1.2.3-portable` 等版本目录。若该项目当前或上次管理的同路径 EXE 正在运行，先按完整路径强制终止对应进程，再覆盖标准文件；不会终止 `output` 中的其他程序，也不会改用 `-2` 等备用文件名。构建记录只包含本次实际生成的产物，并清理上次由 Skill 管理、这次已不再生成的旧文件。
+常用选项：
 
-默认情况下，源码和产物 SHA256 未变化时直接复用现有结果；使用 `-ForceRebuild` 可强制重新构建。新生成的配置把依赖安装、快速本地构建和完整正式构建分开：锁文件未变化时跳过依赖安装；Tauri 使用无安装包模式，Python 只构建 wheel，Rust 使用 `cargo build --release`，.NET 使用 `dotnet build`，Electron 只处理当前平台已有构建命令。正式发布仍生成全部正式包。提交前会再次核对源码指纹，构建期间发生变化时自动重建一次，持续变化则停止发布。
+- `-WhatIf`：只预览，不修改文件、Git 或 GitHub。
+- `-OutputFormat Json`：输出适合脚本处理的 JSON。
+- `-CommitStrategy AutoSplit`：按计划创建多个事务化提交并统一推送。
+- `-ProjectType`：多种项目清单并存时明确指定类型。
+- `-WorkflowPolicy ReuseCompatible`：复用兼容的人工工作流。
+- `-WorkflowPolicy CreateSeparate`：保留人工工作流并新建发布工作流。
 
-提交与发布前默认分析最近 30 条非合并提交。样本充足且风格稳定时沿用现有格式；样本不足、风格并列或置信度低时自动回退到 Conventional Commits。识别结果会出现在预演 JSON 的 `commitStyle` 字段中。
+</details>
 
-生成的 GitHub Actions 使用最小化任务权限、标签级并发锁、任务超时和一天临时产物保留期；所有第三方 Action 都固定到完整 commit SHA，并在注释中保留版本标签。GitHub Actions 始终重新生成正式发布包。
-
-人工工作流默认不覆盖：可选择兼容复用，或保留原工作流并新建 `.github/workflows/auto-release.yml`。
-
-## 支持能力
-
-- 自动检测 Tauri、Node.js、Go、Python、Rust、.NET、Maven 和 Gradle
-- 自动检测 CMake、Flutter、Android、Electron 和 Docker
-- 识别 npm、pnpm、Yarn、Bun、pip、uv、Poetry、Cargo、NuGet 等工具链
-- 安全、幂等地生成发布配置与 GitHub Actions，拒绝覆盖人工工作流
-- 本地构建不改版本；提交风格自适应的全量中文提交推送；正式发布三种独立操作
-- 自动分析最近提交风格，无法确定时回退到 Conventional Commits
-- 本地构建统一输出到 `output/<项目名><扩展名>`，目录或文件不存在时自动创建
-- 基于源文件指纹和 SHA256 复用有效本地构建
-- 基于锁文件缓存依赖安装，区分快速本地构建和完整正式构建
-- 精确记录本次产物，只终止和清理当前项目已管理的程序
-- 正式发布提交前重新验证构建输入，避免旧产物对应新源码
-- `-WhatIf` 无副作用预演和 `-OutputFormat Json` 结构化结果
-- GitHub Actions 并发、超时、最小权限、短期产物和固定提交保护
-- 本地裸仓库与模拟 GitHub CLI 的完整正式发布契约测试
-- 兼容复用人工工作流，或保留原文件创建独立发布工作流
-- Tauri 五平台、Go 六目标和 Node.js `.tgz` 发布矩阵
-- 项目级版本读取和多文件正则更新
-- 串行或并行测试与构建
-- 构建产物复制、Windows 文件版本校验和 SHA256
-- 分支、远程、版本降级、标签冲突和远程分叉保护
-- GitHub Actions 精确匹配与结构化轮询
-- 创建 GitHub Release 或公开工作流生成的草稿 Release
-- 禁止强推、覆盖标签、自动变基和失败后公开 Release
+完整配置字段见 [`skills/auto-release/references/config.md`](skills/auto-release/references/config.md)。
 
 ## 环境要求
 
 - Windows PowerShell 5.1 或 PowerShell 7+
 - Git
-- Python（使用上述安装命令时）
-- GitHub CLI `gh`（使用 GitHub Actions 或 GitHub Release 时）
+- Python（安装 Skill 或发布 Python 项目时需要）
+- 项目自身需要的构建工具，例如 Node.js、Go、Rust、.NET SDK、JDK、Flutter 或 Docker
+- GitHub CLI `gh`（正式发布到 GitHub 时需要）
 
-## 验证
+## 开发与验证
 
 ```powershell
 & ".\skills\auto-release\tests\validate.ps1"
 ```
-
-## English
-
-`auto-release` detects twelve common project families, analyzes recent commit style with a Conventional Commits fallback, safely generates repository-specific release configuration and tag-triggered GitHub Actions, then packages and publishes releases from Windows. Human-managed workflows are never overwritten.
 
 ## License
 
