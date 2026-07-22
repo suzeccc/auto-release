@@ -1,5 +1,180 @@
 $ErrorActionPreference = "Stop"
 
+function Get-CommitConfigProperty($Config, [string]$Name, $Default = $null) {
+  if ($null -eq $Config) { return $Default }
+  $property = $Config.PSObject.Properties[$Name]
+  if ($null -eq $property) { return $Default }
+  return $property.Value
+}
+
+function Get-CommitSubjectStyle([string]$Subject) {
+  $conventionalPattern = '^[a-z][a-z0-9-]*(?:\([^)]+\))?!?:\s+\S'
+  if ($Subject -match $conventionalPattern) { return "conventional" }
+  if ($Subject -match '^[A-Z][A-Z0-9]+-\d+(?::|\s+-?)\s*\S') { return "ticketed" }
+  if ($Subject -match '^\[[^\]]+\]\s+\S') { return "bracketed" }
+  if ($Subject -match '^(?::[a-z0-9_+-]+:|\p{So})\s*\S') { return "gitmoji" }
+  return "plain"
+}
+
+function Get-CommitStylePattern([string]$Style) {
+  switch ($Style) {
+    "conventional" { return '^[a-z][a-z0-9-]*(?:\([^)]+\))?!?:\s+\S' }
+    "ticketed" { return '^[A-Z][A-Z0-9]+-\d+(?::|\s+-?)\s*\S' }
+    "bracketed" { return '^\[[^\]]+\]\s+\S' }
+    "gitmoji" { return '^(?::[a-z0-9_+-]+:|\p{So})\s*\S' }
+    "plain" { return '^\S.*$' }
+    "off" { return '^.*$' }
+    default { throw "Unsupported commit style: $Style" }
+  }
+}
+
+function Get-CommitStyleFormat([string]$Style) {
+  switch ($Style) {
+    "conventional" { return "type(scope): summary" }
+    "ticketed" { return "PROJECT-123 summary" }
+    "bracketed" { return "[type] summary" }
+    "gitmoji" { return ":emoji: summary" }
+    "plain" { return "summary" }
+    "off" { return "summary" }
+    default { throw "Unsupported commit style: $Style" }
+  }
+}
+
+function Get-CommitStyleAnalysis {
+  [CmdletBinding()]
+  param(
+    [string[]]$Subjects = @(),
+    [ValidateSet("auto", "conventional", "off")]
+    [string]$Policy = "auto",
+    [int]$MinimumSamples = 3,
+    [double]$ConfidenceThreshold = 0.6
+  )
+
+  if ($MinimumSamples -lt 1) { throw "Commit minimumSamples must be positive" }
+  if ($ConfidenceThreshold -le 0 -or $ConfidenceThreshold -gt 1) {
+    throw "Commit confidenceThreshold must be greater than 0 and at most 1"
+  }
+
+  $filtered = @(
+    $Subjects |
+      Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) -and [string]$_ -notmatch '^Merge\s' }
+  )
+  $counts = [ordered]@{
+    conventional = 0
+    ticketed = 0
+    bracketed = 0
+    gitmoji = 0
+    plain = 0
+  }
+  foreach ($subject in $filtered) {
+    $style = Get-CommitSubjectStyle ([string]$subject)
+    $counts[$style] = [int]$counts[$style] + 1
+  }
+
+  $sampleCount = $filtered.Count
+  $selectedStyle = "conventional"
+  $fallbackUsed = $false
+  $reason = "policy"
+  $confidence = 0.0
+
+  if ($Policy -eq "off") {
+    $selectedStyle = "off"
+    $reason = "disabled"
+  }
+  elseif ($Policy -eq "conventional") {
+    $reason = "configured"
+  }
+  elseif ($sampleCount -lt $MinimumSamples) {
+    $fallbackUsed = $true
+    $reason = "insufficient-samples"
+  }
+  else {
+    $highest = ($counts.Values | Measure-Object -Maximum).Maximum
+    $winners = @($counts.GetEnumerator() | Where-Object { $_.Value -eq $highest })
+    $confidence = [Math]::Round(([double]$highest / [double]$sampleCount), 3)
+    if ($winners.Count -ne 1 -or $confidence -lt $ConfidenceThreshold) {
+      $fallbackUsed = $true
+      $reason = if ($winners.Count -ne 1) { "mixed-tie" } else { "low-confidence" }
+    }
+    else {
+      $selectedStyle = [string]$winners[0].Key
+      $reason = "detected"
+    }
+  }
+
+  return [pscustomobject][ordered]@{
+    policy = $Policy
+    selectedStyle = $selectedStyle
+    sampleCount = $sampleCount
+    minimumSamples = $MinimumSamples
+    confidence = $confidence
+    confidenceThreshold = $ConfidenceThreshold
+    fallbackUsed = $fallbackUsed
+    fallback = "conventional"
+    reason = $reason
+    expectedFormat = Get-CommitStyleFormat $selectedStyle
+    pattern = Get-CommitStylePattern $selectedStyle
+    counts = [pscustomobject]$counts
+    examples = @($filtered | Select-Object -First 3)
+  }
+}
+
+function Get-RepositoryCommitStyleAnalysis {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory)]
+    [string]$RepositoryRoot,
+    $CommitConfig = $null
+  )
+
+  $policy = [string](Get-CommitConfigProperty $CommitConfig "policy" "auto")
+  if ($policy -notin @("auto", "conventional", "off")) {
+    throw "Unsupported commit policy: $policy"
+  }
+  $analyzeCount = [int](Get-CommitConfigProperty $CommitConfig "analyzeCount" 30)
+  $minimumSamples = [int](Get-CommitConfigProperty $CommitConfig "minimumSamples" 3)
+  $confidenceThreshold = [double](Get-CommitConfigProperty $CommitConfig "confidenceThreshold" 0.6)
+  $fallback = [string](Get-CommitConfigProperty $CommitConfig "fallback" "conventional")
+  if ($analyzeCount -lt 1) { throw "Commit analyzeCount must be positive" }
+  if ($fallback -ne "conventional") { throw "Commit fallback must be conventional" }
+
+  $previousPreference = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  try {
+    $subjects = @(& git -C $RepositoryRoot log "-$analyzeCount" --no-merges --pretty=%s 2>&1)
+    $exitCode = $LASTEXITCODE
+  }
+  finally {
+    $ErrorActionPreference = $previousPreference
+  }
+  if ($exitCode -ne 0) {
+    throw "Cannot read recent commit subjects: $($subjects -join [Environment]::NewLine)"
+  }
+  $subjects = @($subjects | Where-Object { $_ -isnot [Management.Automation.ErrorRecord] } | ForEach-Object { [string]$_ })
+  return Get-CommitStyleAnalysis `
+    -Subjects $subjects `
+    -Policy $policy `
+    -MinimumSamples $minimumSamples `
+    -ConfidenceThreshold $confidenceThreshold
+}
+
+function Assert-CommitSummaryStyle {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory)]
+    [string]$Summary,
+    [Parameter(Mandatory)]
+    $Analysis
+  )
+
+  if ($Analysis.selectedStyle -eq "off") { return }
+  $actualStyle = Get-CommitSubjectStyle $Summary
+  if ($actualStyle -ne [string]$Analysis.selectedStyle) {
+    $source = if ($Analysis.fallbackUsed) { "Conventional Commits fallback" } else { "recent commit history" }
+    throw "Summary does not follow $source. Expected $($Analysis.expectedFormat); detected $actualStyle"
+  }
+}
+
 function Select-WorkflowRun {
   [CmdletBinding()]
   param(

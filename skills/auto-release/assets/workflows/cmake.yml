@@ -9,7 +9,11 @@ on:
       - "v*"
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -42,8 +46,9 @@ jobs:
             arch: arm64
             cmakeArgs: ""
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Configure
         shell: pwsh
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release ${{ matrix.cmakeArgs }}
@@ -56,17 +61,21 @@ jobs:
           if ($candidates.Count -ne 1) { throw "Expected one {{CMAKE_TARGET}} executable, found $($candidates.Count)" }
           New-Item -ItemType Directory -Force release-assets | Out-Null
           Compress-Archive -LiteralPath $candidates[0].FullName -DestinationPath "release-assets/{{ARTIFACT_STEM}}-${{ matrix.platform }}-${{ matrix.arch }}.zip"
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ${{ matrix.platform }}-${{ matrix.arch }}
           path: release-assets/*.zip
           if-no-files-found: error
+          retention-days: 1
 
   release:
     needs: build
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           path: release-assets
           merge-multiple: true

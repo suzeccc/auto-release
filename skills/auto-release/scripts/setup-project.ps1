@@ -103,7 +103,7 @@ function Get-PackageManager {
   ) {
     $name = "bun"
     $install = "bun install --frozen-lockfile"
-    $setup = "      - uses: oven-sh/setup-bun@v2"
+    $setup = "      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2"
   }
   elseif (Test-Path -LiteralPath (Join-Path $script:ResolvedRepositoryRoot "package-lock.json")) {
     $install = "npm ci"
@@ -688,6 +688,8 @@ function New-GenerationBundle(
   $localCommands = $null
   $commands = @()
   $artifacts = @()
+  $localArtifacts = $null
+  $localSearchRoots = @()
   $additionalFiles = @()
   $readPath = $Profile.VersionSource
   $readPattern = $null
@@ -725,6 +727,9 @@ function New-GenerationBundle(
       $commands += [pscustomobject][ordered]@{ name = "Tests"; command = Get-PackageCommand $Profile.Manager.Name "test" }
     }
     $commands += [pscustomobject][ordered]@{ name = "Build Electron packages"; command = $Profile.ElectronBuildCommand }
+    $localCommands = @($commands)
+    $localArtifacts = @()
+    $localSearchRoots += $Profile.ElectronOutput
   }
   elseif ($Profile.ProjectType -eq "tauri") {
     $readPattern = '"version"\s*:\s*"(?<version>\d+\.\d+\.\d+)"'
@@ -819,11 +824,15 @@ function New-GenerationBundle(
       $bootstrapCommands += [pscustomobject][ordered]@{ name = "Install dependencies"; command = "python -m pip install uv && uv sync --all-extras" }
       if ($Profile.HasTests) { $commands += [pscustomobject][ordered]@{ name = "Tests"; command = "uv run pytest" } }
       $commands += [pscustomobject][ordered]@{ name = "Build distributions"; command = "uv build" }
+      $localCommands = @($commands | Where-Object { $_.name -ne "Build distributions" })
+      $localCommands += [pscustomobject][ordered]@{ name = "Build local wheel"; command = "uv build --wheel" }
     }
     elseif ($Profile.PackageManager -eq "poetry") {
       $bootstrapCommands += [pscustomobject][ordered]@{ name = "Install dependencies"; command = "python -m pip install poetry && poetry install" }
       if ($Profile.HasTests) { $commands += [pscustomobject][ordered]@{ name = "Tests"; command = "poetry run pytest" } }
       $commands += [pscustomobject][ordered]@{ name = "Build distributions"; command = "poetry build" }
+      $localCommands = @($commands | Where-Object { $_.name -ne "Build distributions" })
+      $localCommands += [pscustomobject][ordered]@{ name = "Build local wheel"; command = "poetry build -f wheel" }
     }
     else {
       $installCommand = "python -m pip install --upgrade build && python -m pip install -e ."
@@ -831,10 +840,13 @@ function New-GenerationBundle(
       $bootstrapCommands += [pscustomobject][ordered]@{ name = "Install dependencies"; command = $installCommand }
       if ($Profile.HasTests) { $commands += [pscustomobject][ordered]@{ name = "Tests"; command = "python -m pytest" } }
       $commands += [pscustomobject][ordered]@{ name = "Build distributions"; command = "python -m build" }
+      $localCommands = @($commands | Where-Object { $_.name -ne "Build distributions" })
+      $localCommands += [pscustomobject][ordered]@{ name = "Build local wheel"; command = "python -m build --wheel" }
     }
     $bootstrapInputs += @("pyproject.toml", "uv.lock", "poetry.lock", "requirements.txt") | Where-Object {
       Test-Path -LiteralPath (Join-Path $script:ResolvedRepositoryRoot $_)
     }
+    $localArtifacts = @()
   }
   elseif ($Profile.ProjectType -eq "rust") {
     $readPattern = '(?ms)^\[package\]\s*(?:(?!^\[).)*?^version\s*=\s*"(?<version>\d+\.\d+\.\d+)"'
@@ -845,6 +857,11 @@ function New-GenerationBundle(
     Add-ExistingVersionUpdate ([ref]$updates) "Cargo.lock" $lockPattern '${1}{version}$2'
     $commands += [pscustomobject][ordered]@{ name = "Tests"; command = "cargo test --all" }
     $commands += [pscustomobject][ordered]@{ name = "Package crate"; command = "cargo package --allow-dirty" }
+    $localCommands = @(
+      [pscustomobject][ordered]@{ name = "Tests"; command = "cargo test --all" },
+      [pscustomobject][ordered]@{ name = "Build local target"; command = "cargo build --release" }
+    )
+    $localArtifacts = @()
     $artifacts += [pscustomobject][ordered]@{ source = "target/package/$Stem-{version}.crate"; sha256 = $true }
   }
   elseif ($Profile.ProjectType -eq "dotnet") {
@@ -867,6 +884,12 @@ function New-GenerationBundle(
     $bootstrapRequiredPaths += if ($projectDirectory) { "$projectDirectory/obj/project.assets.json" } else { "obj/project.assets.json" }
     $commands += [pscustomobject][ordered]@{ name = "Tests"; command = "dotnet test `"$($Profile.BuildPath)`" --no-restore --configuration Release" }
     $commands += [pscustomobject][ordered]@{ name = "Pack"; command = "dotnet pack `"$($Profile.BuildPath)`" --no-restore --configuration Release -p:PackageVersion={version} --output dist" }
+    $localCommands = @(
+      [pscustomobject][ordered]@{ name = "Tests"; command = "dotnet test `"$($Profile.BuildPath)`" --no-restore --configuration Release" },
+      [pscustomobject][ordered]@{ name = "Build local target"; command = "dotnet build `"$($Profile.BuildPath)`" --no-restore --configuration Release" }
+    )
+    $localArtifacts = @()
+    $localSearchRoots += if ($projectDirectory) { "$projectDirectory/bin/Release" } else { "bin/Release" }
     $artifacts += [pscustomobject][ordered]@{ source = "dist/$Stem.{version}.nupkg"; sha256 = $true }
   }
   elseif ($Profile.ProjectType -eq "java") {
@@ -879,6 +902,7 @@ function New-GenerationBundle(
   }
 
   if ($null -eq $localCommands) { $localCommands = @($commands) }
+  if ($null -eq $localArtifacts) { $localArtifacts = @($artifacts) }
 
   $templateName = "$($Profile.ProjectType)-v1"
   $requiredAssets = @(Get-RequiredAssets $Profile.ProjectType $stem)
@@ -895,6 +919,13 @@ function New-GenerationBundle(
     branch = $defaults.Branch
     remote = $defaults.Remote
     tagPrefix = "v"
+    commit = [pscustomobject][ordered]@{
+      policy = "auto"
+      analyzeCount = 30
+      minimumSamples = 3
+      confidenceThreshold = 0.6
+      fallback = "conventional"
+    }
     version = [pscustomobject][ordered]@{
       read = [pscustomobject][ordered]@{ path = $readPath; pattern = $readPattern }
       updates = @($updates)
@@ -907,6 +938,8 @@ function New-GenerationBundle(
       bootstrapCommands = @($bootstrapCommands)
       localCommands = @($localCommands)
       commands = @($commands)
+      localArtifacts = @($localArtifacts)
+      localSearchRoots = @($localSearchRoots | Sort-Object -Unique)
       artifacts = @($artifacts)
     }
     releaseNotes = Get-ReleaseNotesConfig
@@ -1035,17 +1068,17 @@ function Assert-CompatibleWorkflowContent([string]$Content, [string]$ProjectType
   if ($Content -notmatch '(?ms)^on:\s*\r?\n\s+push:\s*\r?\n\s+tags:') {
     throw "Existing workflow is not compatible: tag push trigger is missing"
   }
-  if ($Content -notmatch '(?ms)^permissions:\s*\r?\n\s+contents:\s*write\s*$') {
+  if ($Content -notmatch '(?m)^\s+contents:\s*write\s*$') {
     throw "Existing workflow is not compatible: contents write permission is missing"
   }
   if ($Content -notmatch '(?i)(releaseDraft:\s*true|gh\s+release\s+create[^\r\n]*(?:\r?\n[^\r\n]*)*?--draft)') {
     throw "Existing workflow is not compatible: draft Release creation is missing"
   }
   if ($ProjectType -eq "docker") {
-    if ($Content -notmatch '(?ms)^permissions:\s*.*?^\s+packages:\s*write\s*$') {
+    if ($Content -notmatch '(?m)^\s+packages:\s*write\s*$') {
       throw "Existing Docker workflow is not compatible: packages write permission is missing"
     }
-    if ($Content -notmatch 'docker/build-push-action@v7' -or $Content -notmatch '(?m)^\s+push:\s*true\s*$') {
+    if ($Content -notmatch 'docker/build-push-action@(?:v7|[0-9a-f]{40})' -or $Content -notmatch '(?m)^\s+push:\s*true\s*$') {
       throw "Existing Docker workflow is not compatible: image push is missing"
     }
   }
@@ -1222,6 +1255,45 @@ function Invoke-Validate {
     catch { throw "Invalid version update pattern for ${updatePath}: $($_.Exception.Message)" }
   }
 
+  $commit = Get-OptionalProperty $config "commit"
+  if ($commit) {
+    $commitPolicy = [string](Get-OptionalProperty $commit "policy" "auto")
+    if ($commitPolicy -notin @("auto", "conventional", "off")) { throw "Unsupported commit.policy: $commitPolicy" }
+    $analyzeCount = [int](Get-OptionalProperty $commit "analyzeCount" 30)
+    $minimumSamples = [int](Get-OptionalProperty $commit "minimumSamples" 3)
+    $confidenceThreshold = [double](Get-OptionalProperty $commit "confidenceThreshold" 0.6)
+    $fallback = [string](Get-OptionalProperty $commit "fallback" "conventional")
+    if ($analyzeCount -lt 1) { throw "commit.analyzeCount must be positive" }
+    if ($minimumSamples -lt 1) { throw "commit.minimumSamples must be positive" }
+    if ($minimumSamples -gt $analyzeCount) { throw "commit.minimumSamples must not exceed commit.analyzeCount" }
+    if ($confidenceThreshold -le 0 -or $confidenceThreshold -gt 1) { throw "commit.confidenceThreshold must be greater than 0 and at most 1" }
+    if ($fallback -ne "conventional") { throw "commit.fallback must be conventional" }
+  }
+
+  $prepare = Get-RequiredProperty $config "prepare" "root"
+  $localOutputDirectory = [string](Get-OptionalProperty $prepare "localOutputDirectory" "output")
+  if ([string]::IsNullOrWhiteSpace($localOutputDirectory) -or $localOutputDirectory -match '\{(?:version|tag)\}') {
+    throw "prepare.localOutputDirectory must be a stable path without version or tag tokens"
+  }
+  Resolve-RepositoryFile $localOutputDirectory | Out-Null
+  foreach ($commandProperty in @("bootstrapCommands", "localCommands", "commands")) {
+    foreach ($command in @(Get-OptionalProperty $prepare $commandProperty @())) {
+      Get-RequiredProperty $command "name" "prepare.$commandProperty[]" | Out-Null
+      Get-RequiredProperty $command "command" "prepare.$commandProperty[]" | Out-Null
+    }
+  }
+  foreach ($artifactProperty in @("localArtifacts", "artifacts")) {
+    foreach ($artifact in @(Get-OptionalProperty $prepare $artifactProperty @())) {
+      Get-RequiredProperty $artifact "source" "prepare.$artifactProperty[]" | Out-Null
+    }
+  }
+  foreach ($pathProperty in @("bootstrapInputs", "bootstrapRequiredPaths", "localSearchRoots")) {
+    foreach ($relativePath in @(Get-OptionalProperty $prepare $pathProperty @())) {
+      if ([string]::IsNullOrWhiteSpace([string]$relativePath)) { throw "prepare.$pathProperty[] must not be empty" }
+      Resolve-RepositoryFile ([string]$relativePath) | Out-Null
+    }
+  }
+
   $publish = Get-RequiredProperty $config "publish" "root"
   $release = Get-RequiredProperty $publish "release" "publish"
   $releaseMode = [string](Get-RequiredProperty $release "mode" "publish.release")
@@ -1245,19 +1317,29 @@ function Invoke-Validate {
       if (-not (Test-ManagedWorkflowContent $workflow)) { throw "Managed workflow marker is missing" }
       $template = [regex]::Escape([string]$automation.template)
       if ($workflow -notmatch "(?m)^# Template: $template\s*$") { throw "Managed workflow template does not match config" }
+      if ($workflow -notmatch '(?m)^concurrency:\s*$' -or $workflow -notmatch '(?m)^\s+timeout-minutes:\s*\d+\s*$') {
+        throw "Managed workflow must define concurrency and job timeouts"
+      }
+      foreach ($use in [regex]::Matches($workflow, '(?m)^\s*(?:-\s*)?uses:\s*(?<value>\S+)')) {
+        $value = $use.Groups["value"].Value
+        if ($value -notmatch '@[0-9a-f]{40}$') { throw "Managed workflow action is not pinned to a commit: $value" }
+      }
+      if ($workflow -match 'actions/upload-artifact@' -and $workflow -notmatch '(?m)^\s+retention-days:\s*\d+\s*$') {
+        throw "Managed workflow must set artifact retention-days"
+      }
     }
     if ($workflowConfig) {
       $expectedWorkflowName = [string](Get-RequiredProperty $workflowConfig "name" "publish.workflow")
       if ((Get-WorkflowName $workflow) -ne $expectedWorkflowName) { throw "Workflow name does not match publish.workflow.name" }
     }
     if ($workflow -notmatch '(?ms)^on:\s*\r?\n\s+push:\s*\r?\n\s+tags:') { throw "Workflow must use a tag push trigger" }
-    if ($workflow -notmatch '(?ms)^permissions:\s*\r?\n\s+contents:\s*write\s*$') { throw "Workflow must grant contents: write" }
+    if ($workflow -notmatch '(?m)^\s+contents:\s*write\s*$') { throw "Workflow must grant contents: write" }
     if ($workflow -notmatch '(?i)(releaseDraft:\s*true|gh\s+release\s+create[^\r\n]*(?:\r?\n[^\r\n]*)*?--draft)') {
       throw "Workflow must create a draft GitHub Release"
     }
     if ($configuredProjectType -eq "docker") {
-      if ($workflow -notmatch '(?ms)^permissions:\s*.*?^\s+packages:\s*write\s*$') { throw "Docker workflow must grant packages: write" }
-      if ($workflow -notmatch 'docker/build-push-action@v7' -or $workflow -notmatch '(?m)^\s+push:\s*true\s*$') {
+      if ($workflow -notmatch '(?m)^\s+packages:\s*write\s*$') { throw "Docker workflow must grant packages: write" }
+      if ($workflow -notmatch 'docker/build-push-action@(?:v7|[0-9a-f]{40})' -or $workflow -notmatch '(?m)^\s+push:\s*true\s*$') {
         throw "Docker workflow must push the generated image"
       }
     }

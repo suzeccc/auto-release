@@ -4,6 +4,7 @@ $skill = Get-Content -Raw -Encoding UTF8 (Join-Path $root "SKILL.md")
 $script = Join-Path $root "scripts\release.ps1"
 $setupScript = Join-Path $root "scripts\setup-project.ps1"
 $invokeScript = Join-Path $root "scripts\invoke-release.ps1"
+$commitStyleScript = Join-Path $root "scripts\commit-style.ps1"
 $utils = Join-Path $root "scripts\release-utils.ps1"
 $reference = Join-Path $root "references\config.md"
 $workflowTemplates = @(
@@ -73,7 +74,7 @@ function Write-TestUtf8([string]$Path, [string]$Content) {
   [IO.File]::WriteAllText($Path, $Content, [Text.UTF8Encoding]::new($false))
 }
 
-foreach ($path in @($script, $setupScript, $invokeScript, $utils, $reference) + $workflowTemplates) {
+foreach ($path in @($script, $setupScript, $invokeScript, $commitStyleScript, $utils, $reference) + $workflowTemplates) {
   if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
     throw "Required skill file missing: $path"
   }
@@ -128,6 +129,41 @@ Assert-Throws {
 Assert-Throws {
   Assert-ReleaseNotes -ReleaseNotes "## Changes`n`n- one" -Heading "## Changes" -MinItems 2 -MaxItems 6
 } "2 to 6" "too few release-note items must fail"
+
+$conventionalAnalysis = Get-CommitStyleAnalysis -Subjects @(
+  "feat: add search",
+  "fix(api): handle empty input",
+  "docs: update usage",
+  "chore: refresh dependencies"
+)
+Assert-Equal $conventionalAnalysis.selectedStyle "conventional" "Conventional commit style was not detected"
+Assert-Equal $conventionalAnalysis.fallbackUsed $false "Stable Conventional style used fallback"
+
+$plainAnalysis = Get-CommitStyleAnalysis -Subjects @(
+  "Improve search",
+  "Fix empty input",
+  "Update usage",
+  "Refresh dependencies"
+)
+Assert-Equal $plainAnalysis.selectedStyle "plain" "Plain commit style was not detected"
+Assert-Equal $plainAnalysis.reason "detected" "Stable plain style was not selected from history"
+
+$mixedAnalysis = Get-CommitStyleAnalysis -Subjects @(
+  "feat: add search",
+  "[fix] handle empty input",
+  "PROJ-123 update usage",
+  "Refresh dependencies"
+)
+Assert-Equal $mixedAnalysis.selectedStyle "conventional" "Mixed history did not fall back to Conventional Commits"
+Assert-Equal $mixedAnalysis.fallbackUsed $true "Mixed history did not report fallback"
+
+$shortAnalysis = Get-CommitStyleAnalysis -Subjects @("Initial project")
+Assert-Equal $shortAnalysis.selectedStyle "conventional" "Short history did not fall back to Conventional Commits"
+Assert-Equal $shortAnalysis.reason "insufficient-samples" "Short history reported the wrong fallback reason"
+Assert-CommitSummaryStyle -Summary "chore: update project" -Analysis $shortAnalysis
+Assert-Throws {
+  Assert-CommitSummaryStyle -Summary "Update project" -Analysis $shortAnalysis
+} "Conventional Commits fallback" "Fallback accepted a non-Conventional summary"
 
 $parallelRoot = Join-Path ([IO.Path]::GetTempPath()) ("auto-release-parallel-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $parallelRoot | Out-Null
@@ -230,10 +266,17 @@ try {
   & git -C $planRoot push --set-upstream origin main | Out-Null
   if ($LASTEXITCODE -ne 0) { throw "initial push failed" }
 
+  $standaloneStyle = (& $commitStyleScript -RepositoryRoot $planRoot) | ConvertFrom-Json
+  Assert-Equal $standaloneStyle.selectedStyle "conventional" "Standalone analyzer did not use Conventional fallback"
+  Assert-Equal $standaloneStyle.reason "insufficient-samples" "Standalone analyzer reported the wrong fallback reason"
+  Assert-Throws {
+    & $commitStyleScript -RepositoryRoot $planRoot -Summary "Plain summary"
+  } "Conventional Commits fallback" "Standalone analyzer accepted a non-Conventional summary"
+
   $plan = & $script `
     -Mode Plan `
     -Version v1.1.0 `
-    -Summary "Generic project release." `
+    -Summary "chore(release): release fixture" `
     -RepositoryRoot $planRoot
   $planText = $plan -join [Environment]::NewLine
   Assert-Match $planText "Project: Example" "plan missing configured project name"
@@ -244,7 +287,7 @@ try {
   & $script `
     -Mode Prepare `
     -Version v1.1.0 `
-    -Summary "Generic project release." `
+    -Summary "chore(release): release fixture" `
     -RepositoryRoot $planRoot
   $preparedPackage = Get-Content -Raw -Encoding UTF8 (Join-Path $planRoot "package.json") | ConvertFrom-Json
   Assert-Equal $preparedPackage.version "1.1.0" "Prepare did not apply the configured version update"
@@ -257,7 +300,7 @@ try {
   $schema2Plan = & $script `
     -Mode Plan `
     -Version v1.1.0 `
-    -Summary "Generic project release." `
+    -Summary "chore(release): release fixture" `
     -RepositoryRoot $planRoot
   Assert-Match ($schema2Plan -join [Environment]::NewLine) "Project: Example" "release runner rejected schema v2"
 }
@@ -303,6 +346,8 @@ try {
   $nodeWorkflowPath = Join-Path $nodeRoot ".github\workflows\release.yml"
   $nodeConfig = Get-Content -Raw -Encoding UTF8 $nodeConfigPath | ConvertFrom-Json
   Assert-Equal $nodeConfig.schemaVersion 2 "Node config does not use schema v2"
+  Assert-Equal $nodeConfig.commit.policy "auto" "Node config does not analyze recent commit style"
+  Assert-Equal $nodeConfig.commit.fallback "conventional" "Node config does not fall back to Conventional Commits"
   Assert-Equal $nodeConfig.automation.template "node-v1" "Node config uses the wrong template"
   Assert-Equal $nodeConfig.prepare.localOutputDirectory "output" "Node config does not use the unified local output directory"
   Assert-Equal @($nodeConfig.prepare.bootstrapCommands).Count 1 "Node dependency installation was not separated from build commands"
@@ -422,8 +467,10 @@ requires-python = ">=3.10"
   $pythonConfig = Get-Content -Raw -Encoding UTF8 (Join-Path $pythonRoot ".codex-release.json") | ConvertFrom-Json
   Assert-Equal $pythonConfig.automation.template "python-v1" "Python config uses the wrong template"
   Assert-Equal @($pythonConfig.publish.release.requiredAssets).Count 2 "Python config does not validate wheel and sdist"
+  Assert-Match ([string]$pythonConfig.prepare.localCommands[-1].command) '(?:--wheel|-f wheel)' "Python local build still creates every distribution"
+  Assert-Equal (@($pythonConfig.prepare.localArtifacts).Count) 0 "Python local build still requires formal artifacts"
   $pythonWorkflow = Get-Content -Raw -Encoding UTF8 (Join-Path $pythonRoot ".github\workflows\release.yml")
-  Assert-Match $pythonWorkflow 'actions/setup-python@v6' "Python workflow uses the wrong setup action"
+  Assert-Match $pythonWorkflow 'actions/setup-python@[0-9a-f]{40}\s+# v6' "Python workflow action is not pinned"
 }
 finally {
   Remove-TestDirectory $pythonRoot
@@ -445,6 +492,7 @@ edition = "2021"
   $rustConfig = Get-Content -Raw -Encoding UTF8 (Join-Path $rustRoot ".codex-release.json") | ConvertFrom-Json
   Assert-Equal $rustConfig.automation.template "rust-v1" "Rust config uses the wrong template"
   Assert-Match ([string]$rustConfig.prepare.commands[1].command) 'cargo package' "Rust package command is missing"
+  Assert-Match ([string]$rustConfig.prepare.localCommands[-1].command) 'cargo build --release' "Rust local build still packages the crate"
 }
 finally {
   Remove-TestDirectory $rustRoot
@@ -468,8 +516,10 @@ try {
   & $setupScript -Mode Validate -RepositoryRoot $dotnetRoot
   $dotnetConfig = Get-Content -Raw -Encoding UTF8 (Join-Path $dotnetRoot ".codex-release.json") | ConvertFrom-Json
   Assert-Equal $dotnetConfig.automation.template "dotnet-v1" ".NET config uses the wrong template"
+  Assert-Match ([string]$dotnetConfig.prepare.localCommands[-1].command) 'dotnet build' ".NET local build still creates a NuGet package"
+  Assert-Equal ([string]$dotnetConfig.prepare.localSearchRoots[0]) "bin/Release" ".NET local artifact search root is wrong"
   $dotnetWorkflow = Get-Content -Raw -Encoding UTF8 (Join-Path $dotnetRoot ".github\workflows\release.yml")
-  Assert-Match $dotnetWorkflow 'actions/setup-dotnet@v5' ".NET workflow uses the wrong setup action"
+  Assert-Match $dotnetWorkflow 'actions/setup-dotnet@[0-9a-f]{40}\s+# v5' ".NET workflow action is not pinned"
   Assert-Match $dotnetWorkflow 'dotnet-version: "8\.0\.x"' ".NET SDK was not inferred from TargetFramework"
 }
 finally {
@@ -494,7 +544,7 @@ try {
   $mavenConfig = Get-Content -Raw -Encoding UTF8 (Join-Path $mavenRoot ".codex-release.json") | ConvertFrom-Json
   Assert-Equal $mavenConfig.automation.template "java-v1" "Maven config uses the wrong template"
   $mavenWorkflow = Get-Content -Raw -Encoding UTF8 (Join-Path $mavenRoot ".github\workflows\release.yml")
-  Assert-Match $mavenWorkflow 'actions/setup-java@v5' "Java workflow uses the wrong setup action"
+  Assert-Match $mavenWorkflow 'actions/setup-java@[0-9a-f]{40}\s+# v5' "Java workflow action is not pinned"
   Assert-Match $mavenWorkflow 'cache: maven' "Maven dependency cache is missing"
 }
 finally {
@@ -565,7 +615,7 @@ environment:
   Assert-Equal $flutterConfig.automation.template "flutter-v1" "Flutter config uses the wrong template"
   Assert-Equal @($flutterConfig.publish.release.requiredAssets).Count 7 "Flutter config does not validate all packages"
   $flutterWorkflow = Get-Content -Raw -Encoding UTF8 (Join-Path $flutterRoot ".github\workflows\release.yml")
-  Assert-Match $flutterWorkflow 'subosito/flutter-action@v2' "Flutter setup action is wrong"
+  Assert-Match $flutterWorkflow 'subosito/flutter-action@[0-9a-f]{40}\s+# v2' "Flutter setup action is not pinned"
   Assert-Match $flutterWorkflow 'android-aab' "Flutter workflow is missing Android App Bundle"
 }
 finally {
@@ -598,7 +648,7 @@ android {
   Assert-Equal $androidConfig.automation.template "android-v1" "Android config uses the wrong template"
   Assert-Equal @($androidConfig.publish.release.requiredAssets).Count 2 "Android config does not validate APK and AAB"
   $androidWorkflow = Get-Content -Raw -Encoding UTF8 (Join-Path $androidRoot ".github\workflows\release.yml")
-  Assert-Match $androidWorkflow 'gradle/actions/setup-gradle@v6' "Android workflow uses the wrong Gradle action"
+  Assert-Match $androidWorkflow 'gradle/actions/setup-gradle@[0-9a-f]{40}\s+# v6' "Android Gradle action is not pinned"
 }
 finally {
   Remove-TestDirectory $androidRoot
@@ -623,6 +673,7 @@ try {
   & $setupScript -Mode Validate -RepositoryRoot $electronRoot
   $electronConfig = Get-Content -Raw -Encoding UTF8 (Join-Path $electronRoot ".codex-release.json") | ConvertFrom-Json
   Assert-Equal $electronConfig.automation.template "electron-v1" "Electron config uses the wrong template"
+  Assert-Equal ([string]$electronConfig.prepare.localSearchRoots[0]) "release-build" "Electron local output discovery ignores the configured directory"
   Assert-Equal @($electronConfig.publish.release.requiredAssets).Count 6 "Electron config does not validate six platform archives"
   $electronWorkflow = Get-Content -Raw -Encoding UTF8 (Join-Path $electronRoot ".github\workflows\release.yml")
   Assert-Match $electronWorkflow 'release-build/\*' "Electron output directory was not rendered"
@@ -646,7 +697,7 @@ LABEL org.opencontainers.image.title="docker-fixture"
   Assert-Equal $dockerConfig.automation.template "docker-v1" "Docker config uses the wrong template"
   $dockerWorkflow = Get-Content -Raw -Encoding UTF8 (Join-Path $dockerRoot ".github\workflows\release.yml")
   Assert-Match $dockerWorkflow 'packages: write' "Docker workflow cannot publish GHCR packages"
-  Assert-Match $dockerWorkflow 'docker/build-push-action@v7' "Docker workflow uses the wrong build action"
+  Assert-Match $dockerWorkflow 'docker/build-push-action@[0-9a-f]{40}\s+# v7' "Docker build action is not pinned"
   Assert-Match $dockerWorkflow 'linux/amd64,linux/arm64' "Docker workflow is not multi-architecture"
 }
 finally {
@@ -963,6 +1014,13 @@ jobs: {}
     [string](Get-Content -Raw -Encoding UTF8 (Join-Path $operationsRoot ".git\auto-release\local-build.json") | ConvertFrom-Json).builtAtUtc
   )
   Assert-Equal $afterReuseTimestamp $reuseReceiptTimestamp "LocalBuild did not reuse a fresh verified output"
+  $localJsonOutput = & $shell -NoProfile -ExecutionPolicy Bypass -File $invokeScript `
+    -Operation LocalBuild -RepositoryRoot $operationsRoot -OutputFormat Json
+  if ($LASTEXITCODE -ne 0) { throw "LocalBuild JSON process failed" }
+  $localJson = ($localJsonOutput | Select-Object -Last 1) | ConvertFrom-Json
+  Assert-Equal $localJson.status "succeeded" "LocalBuild JSON has the wrong status"
+  Assert-Equal $localJson.reused $true "LocalBuild JSON did not report reuse"
+  Assert-Equal (@($localJson.artifacts).Count) 1 "LocalBuild JSON did not report its artifact"
   Start-Sleep -Milliseconds 1100
   & $invokeScript -Operation LocalBuild -RepositoryRoot $operationsRoot -ForceRebuild
   $afterForceTimestamp = [DateTime]::Parse(
@@ -983,7 +1041,7 @@ jobs: {}
   Write-TestUtf8 (Join-Path $operationsRoot "staged.txt") "staged`n"
   & git -C $operationsRoot add staged.txt
   Write-TestUtf8 (Join-Path $operationsRoot "untracked.txt") "untracked`n"
-  $commitSummary = "$newLabel operations changes"
+  $commitSummary = "chore: $newLabel operations changes"
   & $invokeScript -Operation CommitPush -Summary $commitSummary -RepositoryRoot $operationsRoot
   Assert-Equal (git -C $operationsRoot log -1 --pretty=%s) $commitSummary "CommitPush used the wrong commit summary"
   Assert-Equal (git -C $operationsRoot status --porcelain) $null "CommitPush did not commit all changes"
@@ -994,7 +1052,7 @@ jobs: {}
   $mainHead = $localHead
   & git -C $operationsRoot switch -c feature/commit-push | Out-Null
   Write-TestUtf8 (Join-Path $operationsRoot "feature.txt") "feature`n"
-  $featureSummary = "$newLabel feature branch"
+  $featureSummary = "chore: $newLabel feature branch"
   & $invokeScript -Operation CommitPush -Summary $featureSummary -RepositoryRoot $operationsRoot
   $featureHead = git -C $operationsRoot rev-parse HEAD
   $remoteFeatureHead = (git -C $operationsRoot ls-remote origin refs/heads/feature/commit-push).Split("`t")[0]
@@ -1012,6 +1070,135 @@ jobs: {}
 finally {
   Remove-TestDirectory $operationsRoot
   Remove-TestDirectory $operationsRemote
+}
+
+$releaseRoot = New-TestDirectory "release-e2e"
+$releaseRemote = Join-Path ([IO.Path]::GetTempPath()) ("auto-release-release-e2e-remote-" + [guid]::NewGuid().ToString("N"))
+$fakeGhRoot = Join-Path ([IO.Path]::GetTempPath()) ("auto-release-fake-gh-" + [guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Path $releaseRemote | Out-Null
+New-Item -ItemType Directory -Path $fakeGhRoot | Out-Null
+$previousPath = $env:PATH
+$previousFakeLog = $env:AUTO_RELEASE_FAKE_GH_LOG
+try {
+  & git -C $releaseRemote init --bare | Out-Null
+  & git -C $releaseRoot remote add origin $releaseRemote
+  & git -C $releaseRoot config user.name "Auto Release E2E"
+  & git -C $releaseRoot config user.email "auto-release-e2e@example.invalid"
+  Write-TestUtf8 (Join-Path $releaseRoot "package.json") '{"name":"release-e2e","version":"1.0.0"}'
+  Write-TestUtf8 (Join-Path $releaseRoot ".gitignore") "dist/`nrelease/`noutput/`n"
+  Write-TestUtf8 (Join-Path $releaseRoot ".codex-release.json") @'
+{
+  "schemaVersion": 1,
+  "projectName": "release-e2e",
+  "branch": "main",
+  "remote": "origin",
+  "tagPrefix": "v",
+  "version": {
+    "read": {"path":"package.json","pattern":"\\\"version\\\"\\s*:\\s*\\\"(?<version>\\d+\\.\\d+\\.\\d+)\\\""},
+    "updates": [
+      {"path":"package.json","pattern":"(\\\"version\\\"\\s*:\\s*\\\")\\d+\\.\\d+\\.\\d+(\\\")","replacement":"${1}{version}$2","expectedMatches":1}
+    ]
+  },
+  "prepare": {
+    "parallel": false,
+    "commands": [{"name":"Build release fixture","command":"if not exist dist mkdir dist && echo binary>dist\\e2e.exe"}],
+    "artifacts": [{"source":"dist/e2e.exe","destination":"output/{tag}-portable/e2e.exe","sha256":true}]
+  },
+  "publish": {
+    "workflow": {"name":"Release","event":"push","findTimeoutSeconds":10,"waitTimeoutMinutes":1},
+    "release": {
+      "mode":"publish-draft",
+      "title":"{projectName} {tag}",
+      "requireDraft":true,
+      "requiredAssets":[{"pattern":"^release-e2e-1\\.1\\.0\\.exe$","label":"E2E executable"}]
+    }
+  }
+}
+'@
+  Write-TestUtf8 (Join-Path $releaseRoot ".github\workflows\release.yml") @'
+# Expected asset: release-e2e-1.1.0.exe
+name: Release
+on:
+  push:
+    tags:
+      - "v*"
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - run: gh release create "$GITHUB_REF_NAME" release-e2e-1.1.0.exe --draft
+'@
+  & git -C $releaseRoot add package.json .gitignore .codex-release.json .github/workflows/release.yml
+  & git -C $releaseRoot commit -m "Initial release E2E fixture" | Out-Null
+  & git -C $releaseRoot push --set-upstream origin main | Out-Null
+
+  $fakeGhLog = Join-Path $fakeGhRoot "calls.log"
+  $env:AUTO_RELEASE_FAKE_GH_LOG = $fakeGhLog
+  Write-TestUtf8 (Join-Path $fakeGhRoot "gh.ps1") @'
+$commandLine = $args -join " "
+Add-Content -LiteralPath $env:AUTO_RELEASE_FAKE_GH_LOG -Value $commandLine
+if ($args[0] -eq "auth" -and $args[1] -eq "status") { exit 0 }
+if ($args[0] -eq "run" -and $args[1] -eq "list") {
+  $sha = (& git rev-parse HEAD).Trim()
+  '[{"databaseId":7001,"headBranch":"v1.1.0","headSha":"' + $sha + '","status":"completed","url":"https://example.invalid/runs/7001"}]'
+  exit 0
+}
+if ($args[0] -eq "run" -and $args[1] -eq "view") {
+  '{"status":"completed","conclusion":"success","url":"https://example.invalid/runs/7001","jobs":[{"name":"Build","status":"completed","conclusion":"success"}]}'
+  exit 0
+}
+if ($args[0] -eq "release" -and $args[1] -eq "view") {
+  '{"isDraft":true,"url":"https://example.invalid/releases/v1.1.0","assets":[{"name":"release-e2e-1.1.0.exe"}]}'
+  exit 0
+}
+if ($args[0] -eq "release" -and $args[1] -eq "edit") { exit 0 }
+throw "Unexpected fake gh command: $commandLine"
+'@
+  $env:PATH = "$fakeGhRoot;$previousPath"
+  Assert-Equal (Get-Command gh).Source (Join-Path $fakeGhRoot "gh.ps1") "Fake GitHub CLI was not selected"
+
+  $summary = "chore(release): $newLabel release end to end"
+  $previewOutput = & $shell -NoProfile -ExecutionPolicy Bypass -File $invokeScript `
+    -Operation Release -Version v1.1.0 -Summary $summary -ReleaseNotes $validNotes `
+    -RepositoryRoot $releaseRoot -WhatIf -OutputFormat Json
+  if ($LASTEXITCODE -ne 0) { throw "Release WhatIf process failed" }
+  $preview = ($previewOutput | Select-Object -Last 1) | ConvertFrom-Json
+  Assert-Equal $preview.status "planned" "Release WhatIf did not return a plan"
+  Assert-Equal $preview.whatIf $true "Release WhatIf JSON is missing the whatIf marker"
+  Assert-Equal $preview.commitStyle.selectedStyle "conventional" "Release WhatIf did not report the selected commit style"
+  Assert-Equal ((Get-Content -Raw -Encoding UTF8 (Join-Path $releaseRoot "package.json") | ConvertFrom-Json).version) "1.0.0" "Release WhatIf changed the project version"
+  if (git -C $releaseRoot tag) { throw "Release WhatIf created a tag" }
+
+  & $invokeScript -Operation Release -Version v1.1.0 -Summary $summary -ReleaseNotes $validNotes -RepositoryRoot $releaseRoot
+  Assert-Equal ((Get-Content -Raw -Encoding UTF8 (Join-Path $releaseRoot "package.json") | ConvertFrom-Json).version) "1.1.0" "Release E2E did not update the version"
+  if (-not (Test-Path -LiteralPath (Join-Path $releaseRoot "output\release-e2e.exe") -PathType Leaf)) {
+    throw "Release E2E did not create the canonical versionless local output"
+  }
+  if (Test-Path -LiteralPath (Join-Path $releaseRoot "output\v1.1.0-portable")) {
+    throw "Release E2E created a versioned local output directory"
+  }
+  $localReleaseHead = git -C $releaseRoot rev-parse HEAD
+  $remoteReleaseHead = (git -C $releaseRoot ls-remote origin refs/heads/main).Split("`t")[0]
+  Assert-Equal $remoteReleaseHead $localReleaseHead "Release E2E did not push the release commit"
+  if (-not (git -C $releaseRoot ls-remote origin refs/tags/v1.1.0)) { throw "Release E2E did not push the tag" }
+  Assert-Match (Get-Content -Raw -Encoding UTF8 $fakeGhLog) 'release edit v1\.1\.0' "Release E2E did not publish the draft Release"
+  Assert-Equal (git -C $releaseRoot status --porcelain) $null "Release E2E left a dirty working tree"
+
+  $errorOutput = & $shell -NoProfile -ExecutionPolicy Bypass -File $invokeScript `
+    -Operation CommitPush -RepositoryRoot $releaseRoot -OutputFormat Json 2>$null
+  if ($LASTEXITCODE -eq 0) { throw "JSON failure fixture unexpectedly succeeded" }
+  $errorResult = ($errorOutput | Select-Object -Last 1) | ConvertFrom-Json
+  Assert-Equal $errorResult.status "failed" "JSON failure output has the wrong status"
+  Assert-Match $errorResult.errorCode '^AUTO_RELEASE_[A-Z]+_FAILED$' "JSON failure output lacks a stable error code"
+}
+finally {
+  $env:PATH = $previousPath
+  $env:AUTO_RELEASE_FAKE_GH_LOG = $previousFakeLog
+  Remove-TestDirectory $releaseRoot
+  Remove-TestDirectory $releaseRemote
+  Remove-TestDirectory $fakeGhRoot
 }
 
 Assert-Match $scriptSource '\.codex-release\.json' "script does not use repository config"
@@ -1050,6 +1237,7 @@ Assert-Match $referenceSource 'uploadAssets' "config reference missing upload as
 
 $setupSource = Get-Content -Raw -Encoding UTF8 $setupScript
 Assert-Match $setupSource 'Refusing to overwrite human-managed workflow' "setup script lacks workflow overwrite protection"
+Assert-Match $setupSource 'commit\.fallback must be conventional' "setup script does not validate the commit fallback"
 Assert-Match $setupSource 'CreateSeparate[\s\S]*ReuseCompatible' "setup script lacks human workflow policies"
 Assert-Match $setupSource 'tauri[\s\S]*node[\s\S]*go' "setup script does not support all project types"
 foreach ($projectType in @("python", "rust", "dotnet", "java")) {
@@ -1069,11 +1257,21 @@ Assert-Match $invokeSource 'sourceFingerprint' "Release lacks local build freshn
 Assert-Match $invokeSource 'AllowExistingHead' "Release does not support unchanged working trees"
 Assert-Match $invokeSource 'RequestedOperation -eq "LocalBuild"' "LocalBuild does not bypass GitHub workflow validation"
 Assert-Match $invokeSource 'Mode GenerateLocal' "First-time LocalBuild still creates a GitHub release workflow"
+Assert-Match $invokeSource 'Assert-CommitSummaryStyle' "CommitPush does not enforce the analyzed commit style"
+Assert-Match $referenceSource 'Conventional Commits' "config reference does not document commit-style fallback"
 foreach ($template in $workflowTemplates) {
   $templateSource = Get-Content -Raw -Encoding UTF8 $template
   Assert-Match $templateSource '^# Generated by Auto Release' "workflow template lacks managed marker"
   Assert-Match $templateSource 'permissions:[\s\S]*contents: write' "workflow template lacks release permissions"
   Assert-Match $templateSource 'draft|releaseDraft' "workflow template does not create a draft release"
+  Assert-Match $templateSource '(?m)^concurrency:\s*$' "workflow template lacks concurrency control"
+  Assert-Match $templateSource '(?m)^\s+timeout-minutes:\s*\d+\s*$' "workflow template lacks a job timeout"
+  if ($templateSource -match '(?m)^\s*(?:-\s*)?uses:\s*[^\s]+@(?:v\d+|stable)') {
+    throw "workflow template contains a floating action reference: $template"
+  }
+  if ($templateSource -match 'actions/upload-artifact@') {
+    Assert-Match $templateSource '(?m)^\s+retention-days:\s*\d+\s*$' "workflow template lacks artifact retention"
+  }
 }
 
 Write-Host "auto-release contract passed"

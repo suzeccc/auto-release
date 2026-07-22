@@ -21,7 +21,9 @@ param(
 
   [string]$ArtifactManifestPath,
 
-  [string[]]$ManagedLocalArtifactPath = @()
+  [string[]]$ManagedLocalArtifactPath = @(),
+
+  [switch]$CanonicalLocalOutput
 )
 
 $ErrorActionPreference = "Stop"
@@ -31,6 +33,7 @@ $script:Config = $null
 $script:ResolvedRepositoryRoot = $null
 $script:ConfigFile = $null
 $script:Tag = $null
+$script:CommitStyleAnalysis = $null
 $utilsScript = Join-Path $PSScriptRoot "release-utils.ps1"
 
 if (-not (Test-Path -LiteralPath $utilsScript)) {
@@ -58,6 +61,9 @@ if ($ArtifactManifestPath -and $Mode -notin @("LocalBuild", "Prepare")) {
 }
 if ($ManagedLocalArtifactPath.Count -gt 0 -and $Mode -ne "LocalBuild") {
   throw "ManagedLocalArtifactPath is only valid for LocalBuild"
+}
+if ($CanonicalLocalOutput -and $Mode -ne "Prepare") {
+  throw "CanonicalLocalOutput is only valid for Prepare"
 }
 
 function Invoke-Checked([string]$FilePath, [string[]]$Arguments) {
@@ -188,7 +194,32 @@ function Assert-ReleaseConfig {
     }
   }
 
+  $commitConfig = Get-OptionalProperty $script:Config "commit"
+  if ($commitConfig) {
+    $commitPolicy = [string](Get-OptionalProperty $commitConfig "policy" "auto")
+    if ($commitPolicy -notin @("auto", "conventional", "off")) {
+      throw "commit.policy must be auto, conventional, or off"
+    }
+    $analyzeCount = [int](Get-OptionalProperty $commitConfig "analyzeCount" 30)
+    $minimumSamples = [int](Get-OptionalProperty $commitConfig "minimumSamples" 3)
+    $confidenceThreshold = [double](Get-OptionalProperty $commitConfig "confidenceThreshold" 0.6)
+    $fallback = [string](Get-OptionalProperty $commitConfig "fallback" "conventional")
+    if ($analyzeCount -lt 1) { throw "commit.analyzeCount must be positive" }
+    if ($minimumSamples -lt 1 -or $minimumSamples -gt $analyzeCount) {
+      throw "commit.minimumSamples must be positive and not exceed commit.analyzeCount"
+    }
+    if ($confidenceThreshold -le 0 -or $confidenceThreshold -gt 1) {
+      throw "commit.confidenceThreshold must be greater than 0 and at most 1"
+    }
+    if ($fallback -ne "conventional") { throw "commit.fallback must be conventional" }
+  }
+
   $prepare = Get-RequiredProperty $script:Config "prepare" "root"
+  $localOutputDirectory = [string](Get-OptionalProperty $prepare "localOutputDirectory" "output")
+  if ([string]::IsNullOrWhiteSpace($localOutputDirectory) -or $localOutputDirectory -match '\{(?:version|tag)\}') {
+    throw "prepare.localOutputDirectory must be a stable path without version or tag tokens"
+  }
+  Resolve-RepositoryPath $localOutputDirectory | Out-Null
   foreach ($commandProperty in @("bootstrapCommands", "localCommands", "commands")) {
     foreach ($command in @(Get-OptionalProperty $prepare $commandProperty @())) {
       Get-RequiredProperty $command "name" "prepare.$commandProperty[]" | Out-Null
@@ -207,8 +238,16 @@ function Assert-ReleaseConfig {
     }
     Resolve-RepositoryPath ([string]$requiredPath) | Out-Null
   }
-  foreach ($artifact in @(Get-OptionalProperty $prepare "artifacts" @())) {
-    Get-RequiredProperty $artifact "source" "prepare.artifacts[]" | Out-Null
+  foreach ($artifactProperty in @("localArtifacts", "artifacts")) {
+    foreach ($artifact in @(Get-OptionalProperty $prepare $artifactProperty @())) {
+      Get-RequiredProperty $artifact "source" "prepare.$artifactProperty[]" | Out-Null
+    }
+  }
+  foreach ($searchRoot in @(Get-OptionalProperty $prepare "localSearchRoots" @())) {
+    if ([string]::IsNullOrWhiteSpace([string]$searchRoot)) {
+      throw "prepare.localSearchRoots[] must be a repository-relative path"
+    }
+    Resolve-RepositoryPath ([string]$searchRoot) | Out-Null
   }
 
   $publish = Get-RequiredProperty $script:Config "publish" "root"
@@ -217,6 +256,14 @@ function Assert-ReleaseConfig {
   if ($releaseMode -notin @("publish-draft", "create", "none")) {
     throw "publish.release.mode must be publish-draft, create, or none"
   }
+}
+
+function Assert-ConfiguredCommitSummary {
+  $commitConfig = Get-OptionalProperty $script:Config "commit"
+  $script:CommitStyleAnalysis = Get-RepositoryCommitStyleAnalysis `
+    -RepositoryRoot $script:ResolvedRepositoryRoot `
+    -CommitConfig $commitConfig
+  Assert-CommitSummaryStyle -Summary $Summary -Analysis $script:CommitStyleAnalysis
 }
 
 function Assert-RepositoryRoot {
@@ -613,17 +660,45 @@ function Get-DiscoveredLocalArtifactFiles {
     }
   }
   elseif ($type -eq "rust") {
-    $root = Resolve-RepositoryPath "target/package"
-    if (Test-Path -LiteralPath $root -PathType Container) {
-      $preferred = Get-PreferredLocalFile @(Get-ChildItem -LiteralPath $root -File -Filter "*.crate")
+    $releaseRoot = Resolve-RepositoryPath "target/release"
+    if (Test-Path -LiteralPath $releaseRoot -PathType Container) {
+      $preferred = Get-PreferredLocalFile @(Get-ChildItem -LiteralPath $releaseRoot -File -Filter "*.exe")
+      if (-not $preferred) {
+        $depsRoot = Join-Path $releaseRoot "deps"
+        if (Test-Path -LiteralPath $depsRoot -PathType Container) {
+          $preferred = Get-PreferredLocalFile @(Get-ChildItem -LiteralPath $depsRoot -File -Filter "*.rlib")
+        }
+      }
       if ($preferred) { $files += $preferred }
+    }
+    if ($files.Count -eq 0) {
+      $root = Resolve-RepositoryPath "target/package"
+      if (Test-Path -LiteralPath $root -PathType Container) {
+        $preferred = Get-PreferredLocalFile @(Get-ChildItem -LiteralPath $root -File -Filter "*.crate")
+        if ($preferred) { $files += $preferred }
+      }
     }
   }
   elseif ($type -eq "dotnet") {
-    $root = Resolve-RepositoryPath "dist"
-    if (Test-Path -LiteralPath $root -PathType Container) {
-      $preferred = Get-PreferredLocalFile @(Get-ChildItem -LiteralPath $root -File -Filter "*.nupkg")
-      if ($preferred) { $files += $preferred }
+    $searchRoots = @(Get-OptionalProperty $script:Config.prepare "localSearchRoots" @("bin/Release"))
+    foreach ($relativeRoot in $searchRoots) {
+      $binRoot = Resolve-RepositoryPath ([string]$relativeRoot)
+      if (Test-Path -LiteralPath $binRoot -PathType Container) {
+        $preferred = Get-PreferredLocalFile @(Get-ChildItem -LiteralPath $binRoot -Recurse -File -Filter "*.exe")
+        if (-not $preferred) {
+          $preferred = Get-PreferredLocalFile @(Get-ChildItem -LiteralPath $binRoot -Recurse -File -Filter "*.dll" | Where-Object {
+            $_.FullName -notmatch '[\\/](?:ref|runtimes)[\\/]'
+          })
+        }
+        if ($preferred) { $files += $preferred; break }
+      }
+    }
+    if ($files.Count -eq 0) {
+      $root = Resolve-RepositoryPath "dist"
+      if (Test-Path -LiteralPath $root -PathType Container) {
+        $preferred = Get-PreferredLocalFile @(Get-ChildItem -LiteralPath $root -File -Filter "*.nupkg")
+        if ($preferred) { $files += $preferred }
+      }
     }
   }
   elseif ($type -eq "java") {
@@ -674,7 +749,8 @@ function Get-DiscoveredLocalArtifactFiles {
   }
   elseif ($type -eq "electron") {
     $candidates = @()
-    foreach ($relativeRoot in @("dist", "out", "release")) {
+    $searchRoots = @(Get-OptionalProperty $script:Config.prepare "localSearchRoots" @("dist", "out", "release"))
+    foreach ($relativeRoot in $searchRoots) {
       $root = Resolve-RepositoryPath $relativeRoot
       if (Test-Path -LiteralPath $root -PathType Container) {
         $candidates += @(Get-ChildItem -LiteralPath $root -Recurse -File -Filter "*.exe" | Where-Object {
@@ -730,7 +806,12 @@ function Stop-ProcessesUsingLocalArtifacts([string[]]$Paths) {
 function Get-LocalBuildExecutablePaths {
   $paths = @()
   $prepare = $script:Config.prepare
-  $artifactDefinitions = @(Get-OptionalProperty $prepare "artifacts" @())
+  $artifactDefinitions = if ($null -ne $prepare.PSObject.Properties["localArtifacts"]) {
+    @(Get-OptionalProperty $prepare "localArtifacts" @())
+  }
+  else {
+    @(Get-OptionalProperty $prepare "artifacts" @())
+  }
   $usedLocalNames = @{}
   foreach ($artifact in $artifactDefinitions) {
     $sourceRelative = Expand-ConfigTokens ([string]$artifact.source)
@@ -793,7 +874,12 @@ function Get-LocalArtifactDestination([IO.FileInfo]$Source, $Artifact, [hashtabl
 
 function Get-PreparedArtifacts([bool]$LocalBuild = $false) {
   $results = @()
-  $artifactDefinitions = @(Get-OptionalProperty $script:Config.prepare "artifacts" @())
+  $artifactDefinitions = if ($LocalBuild -and $null -ne $script:Config.prepare.PSObject.Properties["localArtifacts"]) {
+    @(Get-OptionalProperty $script:Config.prepare "localArtifacts" @())
+  }
+  else {
+    @(Get-OptionalProperty $script:Config.prepare "artifacts" @())
+  }
   if ($LocalBuild -and $artifactDefinitions.Count -eq 0) {
     foreach ($file in @(Get-DiscoveredLocalArtifactFiles)) {
       $artifactDefinitions += [pscustomobject][ordered]@{
@@ -1052,6 +1138,7 @@ function Invoke-Plan {
     "Current version: $currentVersion",
     "Target version: $normalizedVersion",
     "Tag: $($script:Tag)",
+    "Commit style: $($script:CommitStyleAnalysis.selectedStyle) ($($script:CommitStyleAnalysis.reason))",
     "Branch push: $($script:Config.remote)/$($script:Config.branch)",
     "Prepare parallel: $([bool](Get-OptionalProperty $script:Config.prepare 'parallel' $false))"
   )
@@ -1095,8 +1182,9 @@ function Invoke-Prepare {
       Write-Host "Local build is current; skipping configured build commands"
     }
     else {
+      if ($CanonicalLocalOutput) { Stop-LocalBuildProcesses }
       Invoke-ConfiguredCommands
-      $artifacts = @(Get-PreparedArtifacts)
+      $artifacts = @(Get-PreparedArtifacts ([bool]$CanonicalLocalOutput))
       Write-ArtifactManifest $artifacts
     }
     Write-Host "Prepared $($script:Config.projectName) $($script:Tag)"
@@ -1214,6 +1302,9 @@ $previousLocation = Get-Location
 try {
   Initialize-ReleaseContext
   Set-Location -LiteralPath $script:ResolvedRepositoryRoot
+  if ($Mode -in @("Plan", "Publish")) {
+    Assert-ConfiguredCommitSummary
+  }
   if ($Mode -eq "LocalBuild") {
     Invoke-LocalBuild
   }

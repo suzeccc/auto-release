@@ -25,14 +25,30 @@ param(
 
   [string]$SeparateWorkflowPath = ".github/workflows/auto-release.yml",
 
-  [switch]$ForceRebuild
+  [switch]$ForceRebuild,
+
+  [switch]$WhatIf,
+
+  [ValidateSet("Human", "Json")]
+  [string]$OutputFormat = "Human"
 )
 
 $ErrorActionPreference = "Stop"
 $script:ResolvedRepositoryRoot = $null
 $script:Utf8NoBom = [Text.UTF8Encoding]::new($false)
+$script:Stage = "Initialize"
 $setupScript = Join-Path $PSScriptRoot "setup-project.ps1"
 $releaseScript = Join-Path $PSScriptRoot "release.ps1"
+$utilsScript = Join-Path $PSScriptRoot "release-utils.ps1"
+
+if (-not (Test-Path -LiteralPath $utilsScript -PathType Leaf)) {
+  throw "Release utilities missing: $utilsScript"
+}
+. $utilsScript
+
+if ($OutputFormat -eq "Json") {
+  $InformationPreference = "SilentlyContinue"
+}
 
 function Get-OptionalProperty($Object, [string]$Name, $Default = $null) {
   if ($null -eq $Object) { return $Default }
@@ -87,6 +103,28 @@ function Assert-ChineseSummary([string]$Value) {
   if ($Value -notmatch '[\u4e00-\u9fff]') { throw "Summary must contain Chinese text" }
 }
 
+function Write-OperationResult($Result) {
+  if ($OutputFormat -eq "Json") {
+    [Console]::Out.WriteLine(($Result | ConvertTo-Json -Depth 20 -Compress))
+  }
+}
+
+function Write-Preview($Preview) {
+  if ($OutputFormat -eq "Json") {
+    Write-OperationResult $Preview
+    return
+  }
+  Write-Host "WhatIf: $($Preview.operation)"
+  Write-Host "Repository: $($Preview.repositoryRoot)"
+  if ($Preview.projectType) { Write-Host "Project type: $($Preview.projectType)" }
+  if ($null -ne $Preview.localBuildFresh) { Write-Host "Reusable local build: $($Preview.localBuildFresh)" }
+  if ($Preview.branch) { Write-Host "Branch: $($Preview.remote)/$($Preview.branch)" }
+  if ($Preview.commitStyle) {
+    Write-Host "Commit style: $($Preview.commitStyle.selectedStyle) ($($Preview.commitStyle.reason))"
+  }
+  foreach ($action in @($Preview.actions)) { Write-Host "Would: $action" }
+}
+
 function Assert-RepositoryContext {
   if (-not (Test-Path -LiteralPath $RepositoryRoot -PathType Container)) {
     throw "Repository root not found: $RepositoryRoot"
@@ -113,6 +151,20 @@ function Read-ReleaseConfig {
   if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $null }
   try { return Get-Content -Raw -Encoding UTF8 -LiteralPath $path | ConvertFrom-Json }
   catch { throw "Release config is invalid JSON: $path" }
+}
+
+function Get-ConfiguredCommitStyleAnalysis($Config) {
+  $commitConfig = Get-OptionalProperty $Config "commit"
+  return Get-RepositoryCommitStyleAnalysis `
+    -RepositoryRoot $script:ResolvedRepositoryRoot `
+    -CommitConfig $commitConfig
+}
+
+function Assert-ConfiguredCommitSummary($Config) {
+  Assert-ChineseSummary $Summary
+  $analysis = Get-ConfiguredCommitStyleAnalysis $Config
+  Assert-CommitSummaryStyle -Summary $Summary -Analysis $analysis
+  return $analysis
 }
 
 function Disable-StaleLoopbackProxy {
@@ -209,9 +261,9 @@ function Commit-AllChanges(
   [string]$ExpectedSourceFingerprint = "",
   [bool]$UseConfiguredBranch = $true
 ) {
-  Assert-ChineseSummary $Summary
   Assert-NoConflicts
   $config = Read-ReleaseConfig
+  $commitAnalysis = Assert-ConfiguredCommitSummary $config
   $remoteState = Assert-RemoteReady $config $UseConfiguredBranch
   $indexBackup = Backup-GitIndex
   $committed = $false
@@ -244,7 +296,11 @@ function Commit-AllChanges(
     Invoke-GitChecked $arguments
     Write-Host "Pushed: $($remoteState.Remote)/$($remoteState.Branch)"
   }
-  return [pscustomobject]@{ Committed = $committed; Head = Invoke-GitCaptured @("rev-parse", "HEAD") }
+  return [pscustomobject]@{
+    Committed = $committed
+    Head = Invoke-GitCaptured @("rev-parse", "HEAD")
+    CommitStyle = $commitAnalysis
+  }
 }
 
 function Get-WorkflowSettings($Config) {
@@ -527,9 +583,10 @@ function Invoke-StableReleaseBuild($Config, [string]$ManifestPath) {
     if (Test-Path -LiteralPath $ManifestPath -PathType Leaf) {
       Remove-Item -LiteralPath $ManifestPath -Force
     }
+    $canonicalLocalOutput = [string](Get-OptionalProperty $Config.publish.release "mode" "none") -eq "publish-draft"
     & $releaseScript -Mode Prepare -Version $Version -Summary $Summary `
       -RepositoryRoot $script:ResolvedRepositoryRoot -ConfigPath $ConfigPath `
-      -ArtifactManifestPath $ManifestPath | Out-Host
+      -ArtifactManifestPath $ManifestPath -CanonicalLocalOutput:$canonicalLocalOutput | Out-Host
     $Config = Read-ReleaseConfig
     $after = Get-SourceFingerprint $Config
     if ($before -eq $after) {
@@ -543,79 +600,185 @@ function Invoke-StableReleaseBuild($Config, [string]$ManifestPath) {
   throw "Source files kept changing during the verified build; release stopped"
 }
 
-Assert-RepositoryContext
-
-if ($Operation -eq "CommitPush") {
-  Commit-AllChanges $true "" $false | Out-Null
-  exit
+function Invoke-WhatIfPreview {
+  $config = Read-ReleaseConfig
+  $detected = $null
+  if (-not $config -and $Operation -ne "CommitPush") {
+    $detected = (& $setupScript -Mode Detect -ProjectType $ProjectType -RepositoryRoot $script:ResolvedRepositoryRoot) | ConvertFrom-Json
+  }
+  $projectTypeValue = if ($config) { [string](Get-OptionalProperty $config "projectType" "custom") } else { [string]$detected.projectType }
+  $actions = @()
+  $branch = ""
+  $remote = ""
+  $fresh = $null
+  $commitAnalysis = $null
+  if ($Operation -eq "CommitPush") {
+    $commitAnalysis = Assert-ConfiguredCommitSummary $config
+    $target = Get-BranchAndRemote $config $false
+    $branch = $target.Branch
+    $remote = $target.Remote
+    $actions = @("stage all safe changes", "commit with the supplied Chinese summary", "push the current branch")
+  }
+  elseif ($Operation -eq "LocalBuild") {
+    $fresh = if ($config) { -not $ForceRebuild -and (Test-LocalBuildFresh $config) } else { $false }
+    if ($fresh) {
+      $actions = @("reuse the verified local build receipt")
+    }
+    else {
+      $actions = @("initialize local-only configuration if needed", "run dependency bootstrap when its inputs changed", "run fast local commands", "write canonical output and build receipt")
+    }
+  }
+  else {
+    if (-not $Version) { throw "Version is required for Release" }
+    $commitAnalysis = Assert-ConfiguredCommitSummary $config
+    if ([string]::IsNullOrWhiteSpace($ReleaseNotes) -or $ReleaseNotes -notmatch '[\u4e00-\u9fff]') {
+      throw "Chinese ReleaseNotes are required for Release"
+    }
+    if ($config) {
+      $target = Get-BranchAndRemote $config $true
+      $branch = $target.Branch
+      $remote = $target.Remote
+      $fresh = -not $ForceRebuild -and (Test-LocalBuildFresh $config)
+    }
+    $actions = @("create or validate release automation", "plan version $Version", "run a verified build unless reusable", "commit safe changes", "atomically push branch and tag", "wait for GitHub Actions and publish the draft Release")
+  }
+  $changesText = Invoke-GitCaptured @("status", "--short")
+  return [pscustomobject][ordered]@{
+    operation = $Operation
+    status = "planned"
+    whatIf = $true
+    repositoryRoot = $script:ResolvedRepositoryRoot
+    projectType = $projectTypeValue
+    version = $Version
+    branch = $branch
+    remote = $remote
+    localBuildFresh = $fresh
+    commitStyle = $commitAnalysis
+    changes = @($changesText -split "`r?`n" | Where-Object { $_ })
+    actions = $actions
+  }
 }
 
-$config = Ensure-ReleaseAutomation $Operation
-
-if ($Operation -eq "LocalBuild") {
-  if (-not $ForceRebuild -and (Test-LocalBuildFresh $config)) {
-    Write-Host "Local build is current; reusing verified output. Use -ForceRebuild to rebuild."
-    exit
+function Invoke-Main {
+  $script:Stage = "RepositoryCheck"
+  Assert-RepositoryContext
+  if ($WhatIf) {
+    $script:Stage = "Plan"
+    Write-Preview (Invoke-WhatIfPreview)
+    return
   }
-  $previousPaths = @(Get-ReceiptArtifactPaths)
+
+  if ($Operation -eq "CommitPush") {
+    $script:Stage = "CommitPush"
+    $commit = Commit-AllChanges $true "" $false
+    Write-OperationResult ([pscustomobject][ordered]@{
+      operation = $Operation; status = "succeeded"; committed = $commit.Committed; head = $commit.Head; commitStyle = $commit.CommitStyle
+    })
+    return
+  }
+
+  $script:Stage = "Automation"
+  $config = Ensure-ReleaseAutomation $Operation
+
+  if ($Operation -eq "LocalBuild") {
+    $script:Stage = "LocalBuild"
+    if (-not $ForceRebuild -and (Test-LocalBuildFresh $config)) {
+      Write-Host "Local build is current; reusing verified output. Use -ForceRebuild to rebuild."
+      $receipt = Read-LocalBuildReceipt
+      Write-OperationResult ([pscustomobject][ordered]@{
+        operation = $Operation; status = "succeeded"; reused = $true; artifacts = @($receipt.artifacts)
+      })
+      return
+    }
+    $previousPaths = @(Get-ReceiptArtifactPaths)
+    $manifestPath = Get-ArtifactManifestPath
+    try {
+      if (Test-Path -LiteralPath $manifestPath -PathType Leaf) {
+        Remove-Item -LiteralPath $manifestPath -Force
+      }
+      & $releaseScript -Mode LocalBuild -RepositoryRoot $script:ResolvedRepositoryRoot -ConfigPath $ConfigPath `
+        -ArtifactManifestPath $manifestPath -ManagedLocalArtifactPath $previousPaths | Out-Host
+      Write-LocalBuildReceipt $config $manifestPath $previousPaths $true
+    }
+    finally {
+      if (Test-Path -LiteralPath $manifestPath -PathType Leaf) {
+        Remove-Item -LiteralPath $manifestPath -Force
+      }
+    }
+    $receipt = Read-LocalBuildReceipt
+    Write-OperationResult ([pscustomobject][ordered]@{
+      operation = $Operation; status = "succeeded"; reused = $false; artifacts = @($receipt.artifacts)
+    })
+    return
+  }
+
+  if (-not $Version) { throw "Version is required for Release" }
+  $commitAnalysis = Assert-ConfiguredCommitSummary $config
+  if ([string]::IsNullOrWhiteSpace($ReleaseNotes) -or $ReleaseNotes -notmatch '[\u4e00-\u9fff]') {
+    throw "Chinese ReleaseNotes are required for Release"
+  }
+  $releaseMode = [string](Get-OptionalProperty $config.publish.release "mode" "none")
+  if ($releaseMode -eq "none") { throw "Release operation requires GitHub Release creation" }
+  if (-not (Get-OptionalProperty $config.publish "workflow")) { throw "Release operation requires a tag-triggered build workflow" }
+
+  $localBuildIsFresh = -not $ForceRebuild -and (Test-LocalBuildFresh $config)
+  $script:Stage = "Plan"
+  & $releaseScript -Mode Plan -Version $Version -Summary $Summary -RepositoryRoot $script:ResolvedRepositoryRoot -ConfigPath $ConfigPath | Out-Host
   $manifestPath = Get-ArtifactManifestPath
   try {
-    if (Test-Path -LiteralPath $manifestPath -PathType Leaf) {
-      Remove-Item -LiteralPath $manifestPath -Force
+    $verifiedFingerprint = ""
+    $script:Stage = "Prepare"
+    if ($localBuildIsFresh) {
+      $before = Get-SourceFingerprint $config
+      & $releaseScript -Mode Prepare -Version $Version -Summary $Summary `
+        -RepositoryRoot $script:ResolvedRepositoryRoot -ConfigPath $ConfigPath -SkipBuild | Out-Host
+      $config = Read-ReleaseConfig
+      $after = Get-SourceFingerprint $config
+      if ($before -eq $after -and (Test-LocalBuildFresh $config)) {
+        $verifiedFingerprint = $after
+      }
+      else {
+        Write-Warning "The verified local build became stale during release preparation; rebuilding"
+        $result = Invoke-StableReleaseBuild $config $manifestPath
+        $config = $result.Config
+        $verifiedFingerprint = $result.Fingerprint
+      }
     }
-    & $releaseScript -Mode LocalBuild -RepositoryRoot $script:ResolvedRepositoryRoot -ConfigPath $ConfigPath `
-      -ArtifactManifestPath $manifestPath -ManagedLocalArtifactPath $previousPaths | Out-Host
-    Write-LocalBuildReceipt $config $manifestPath $previousPaths $true
+    else {
+      $result = Invoke-StableReleaseBuild $config $manifestPath
+      $config = $result.Config
+      $verifiedFingerprint = $result.Fingerprint
+    }
+    $script:Stage = "Commit"
+    $commit = Commit-AllChanges $false $verifiedFingerprint $true
+    $script:Stage = "Publish"
+    & $releaseScript -Mode Publish -Version $Version -Summary $Summary -ReleaseNotes $ReleaseNotes `
+      -RepositoryRoot $script:ResolvedRepositoryRoot -ConfigPath $ConfigPath -AllowExistingHead:(-not $commit.Committed)
+    Write-OperationResult ([pscustomobject][ordered]@{
+      operation = $Operation; status = "succeeded"; version = $Version; tag = "$([string](Get-OptionalProperty $config 'tagPrefix' 'v'))$($Version.TrimStart('v'))"; head = $commit.Head; localBuildReused = $localBuildIsFresh; commitStyle = $commitAnalysis
+    })
   }
   finally {
     if (Test-Path -LiteralPath $manifestPath -PathType Leaf) {
       Remove-Item -LiteralPath $manifestPath -Force
     }
   }
-  exit
 }
 
-if (-not $Version) { throw "Version is required for Release" }
-Assert-ChineseSummary $Summary
-if ([string]::IsNullOrWhiteSpace($ReleaseNotes) -or $ReleaseNotes -notmatch '[\u4e00-\u9fff]') {
-  throw "Chinese ReleaseNotes are required for Release"
-}
-$releaseMode = [string](Get-OptionalProperty $config.publish.release "mode" "none")
-if ($releaseMode -eq "none") { throw "Release operation requires GitHub Release creation" }
-if (-not (Get-OptionalProperty $config.publish "workflow")) { throw "Release operation requires a tag-triggered build workflow" }
-
-$localBuildIsFresh = -not $ForceRebuild -and (Test-LocalBuildFresh $config)
-& $releaseScript -Mode Plan -Version $Version -Summary $Summary -RepositoryRoot $script:ResolvedRepositoryRoot -ConfigPath $ConfigPath | Out-Host
-$manifestPath = Get-ArtifactManifestPath
 try {
-  $verifiedFingerprint = ""
-  if ($localBuildIsFresh) {
-    $before = Get-SourceFingerprint $config
-    & $releaseScript -Mode Prepare -Version $Version -Summary $Summary `
-      -RepositoryRoot $script:ResolvedRepositoryRoot -ConfigPath $ConfigPath -SkipBuild | Out-Host
-    $config = Read-ReleaseConfig
-    $after = Get-SourceFingerprint $config
-    if ($before -eq $after -and (Test-LocalBuildFresh $config)) {
-      $verifiedFingerprint = $after
-    }
-    else {
-      Write-Warning "The verified local build became stale during release preparation; rebuilding"
-      $result = Invoke-StableReleaseBuild $config $manifestPath
-      $config = $result.Config
-      $verifiedFingerprint = $result.Fingerprint
-    }
-  }
-  else {
-    $result = Invoke-StableReleaseBuild $config $manifestPath
-    $config = $result.Config
-    $verifiedFingerprint = $result.Fingerprint
-  }
-  $commit = Commit-AllChanges $false $verifiedFingerprint $true
-  & $releaseScript -Mode Publish -Version $Version -Summary $Summary -ReleaseNotes $ReleaseNotes `
-    -RepositoryRoot $script:ResolvedRepositoryRoot -ConfigPath $ConfigPath -AllowExistingHead:(-not $commit.Committed)
+  Invoke-Main
 }
-finally {
-  if (Test-Path -LiteralPath $manifestPath -PathType Leaf) {
-    Remove-Item -LiteralPath $manifestPath -Force
+catch {
+  if ($OutputFormat -eq "Json") {
+    $code = "AUTO_RELEASE_$($script:Stage.ToUpperInvariant())_FAILED"
+    Write-OperationResult ([pscustomobject][ordered]@{
+      operation = $Operation
+      status = "failed"
+      stage = $script:Stage
+      errorCode = $code
+      message = $_.Exception.Message
+    })
+    exit 1
   }
+  throw
 }

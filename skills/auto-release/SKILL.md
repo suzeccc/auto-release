@@ -1,6 +1,6 @@
 ---
 name: auto-release
-description: Detects and configures common application, library, native, mobile, desktop, and container repositories, then provides local test builds, commit-and-push, and formal GitHub releases. Supports Tauri, Node.js, Go, Python, Rust, .NET, Java, CMake, Flutter, Android, Electron, and Docker. Use when the user asks to build a local test program without changing its version, commit and push all changes with a Chinese summary, create or validate release automation, generate a tag-triggered GitHub Actions workflow, or formally publish a semantic version such as v1.2.3.
+description: Detects and configures common application, library, native, mobile, desktop, and container repositories, then provides local test builds, style-aware commit-and-push, formal GitHub releases, dry-run previews, and JSON results. Supports Tauri, Node.js, Go, Python, Rust, .NET, Java, CMake, Flutter, Android, Electron, and Docker. Use when the user asks to build a local test program without changing its version, analyze recent Git commit style, commit and push all changes with a Chinese summary, preview release operations, create or validate release automation, generate a tag-triggered GitHub Actions workflow, or formally publish a semantic version such as v1.2.3.
 ---
 
 # Auto Release
@@ -22,6 +22,7 @@ $setup = "$env:USERPROFILE\.codex\skills\auto-release\scripts\setup-project.ps1"
 自动支持 Tauri、Node.js、Go、Python、Rust、.NET、Java、CMake、Flutter、Android、Electron 和 Docker。专用应用类型优先识别；其他多生态清单并存时，必须用 `-ProjectType` 显式指定类型。生成器会：
 
 - 创建 schema v2 `.codex-release.json`。
+- 配置提交信息自动分析；无法可靠确定最近风格时回退到 Conventional Commits。
 - 创建标签触发的 `.github/workflows/release.yml`。
 - 根据锁文件选择 npm、pnpm、Yarn 或 Bun。
 - 为 Tauri 生成 Windows x64/ARM64、macOS Intel/Apple Silicon 和 Linux 构建矩阵。
@@ -51,24 +52,30 @@ $invoke = "$env:USERPROFILE\.codex\skills\auto-release\scripts\invoke-release.ps
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File $invoke -Operation LocalBuild -RepositoryRoot "<仓库根目录>"
 ```
 
-只校验本地版本源、构建命令和产物，不得因 GitHub 工作流缺少标签触发器而阻止 `LocalBuild`。首次使用时调用 `GenerateLocal`，不得读取、覆盖或创建 GitHub 工作流；用户以后选择 `Release` 时再升级为完整发布配置。执行 `prepare.localCommands`；旧配置未声明时回退到 `prepare.commands`。先按 `prepare.bootstrapInputs` 和依赖命令计算缓存，仅在输入变化时执行 `prepare.bootstrapCommands`。保留构建工具的原始产物，并统一复制到 `<仓库根目录>/output/<项目名><扩展名>`。`output` 目录或目标文件不存在时自动创建，已存在时覆盖；文件名不带版本号。
+用户要求预览或确认操作时追加 `-WhatIf`，不得修改配置、版本、构建产物、Git 或 GitHub。机器调用时追加 `-OutputFormat Json`，只依赖最后一行 JSON；失败结果包含 `stage`、`errorCode` 和 `message`。
 
-默认先验证 `.git/auto-release/local-build.json` 的源码指纹和产物 SHA256，全部有效时直接复用；用户明确要求重新打包时传入 `-ForceRebuild`。只按完整路径终止当前配置产物或上次收据记录的 EXE，不得遍历并终止 `output` 中的无关程序。构建后只记录底层执行器返回的本次产物清单，清理上次由 Skill 管理但本次不再生成的旧输出；禁止因文件占用创建 `-2`、`-3` 等备用文件。状态文件不进入 Git，并兼容读取旧目录中的收据。
+只校验本地版本源、构建命令和产物，不得因 GitHub 工作流缺少标签触发器而阻止 `LocalBuild`。首次使用时调用 `GenerateLocal`，不得读取、覆盖或创建 GitHub 工作流；用户以后选择 `Release` 时再升级为完整发布配置。执行 `prepare.localCommands`；旧配置未声明时回退到 `prepare.commands`。先按 `prepare.bootstrapInputs` 和依赖命令计算缓存，仅在输入变化时执行 `prepare.bootstrapCommands`。保留构建工具的原始产物，并统一复制到 `<仓库根目录>/output/<项目名><扩展名>`。`output` 目录或目标文件不存在时自动创建，已存在时覆盖；目录名和文件名都不得包含版本号或标签。
+
+默认先验证 `.git/auto-release/local-build.json` 的源码指纹和产物 SHA256，全部有效时直接复用；用户明确要求重新打包时传入 `-ForceRebuild`。生成配置优先使用快速本地命令：Tauri 不生成安装器，Python 只生成 wheel，Rust 执行 release build，.NET 执行 build，Electron 使用当前平台构建。只按完整路径终止当前配置产物或上次收据记录的 EXE，不得遍历并终止 `output` 中的无关程序。构建后只记录底层执行器返回的本次产物清单，清理上次由 Skill 管理但本次不再生成的旧输出；禁止因文件占用创建 `-2`、`-3` 等备用文件。状态文件不进入 Git，并兼容读取旧目录中的收据。
 
 ### 2. CommitPush
 
 检查冲突和疑似密钥后，把更改区、暂存区、删除和未跟踪文件全部提交，并推送当前分支：
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File $invoke -Operation CommitPush -Summary "一句中文总结" -RepositoryRoot "<仓库根目录>"
+$style = "$env:USERPROFILE\.codex\skills\auto-release\scripts\commit-style.ps1"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File $style -RepositoryRoot "<仓库根目录>"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File $invoke -Operation CommitPush -Summary "一句符合分析结果的中文总结" -RepositoryRoot "<仓库根目录>"
 ```
 
-根据完整差异生成单行中文 `Summary`。本操作明确允许等价于 `git add -A` 的全量暂存，但仍遵守 `.gitignore`；发现 `.env`、私钥、凭据文件或密钥内容时停止并恢复原暂存区。远程领先或分叉时停止，不自动合并或变基。
+提交前分析最近 30 条非合并提交。至少 3 条样本且某种风格占比达到 60% 时沿用该风格；样本不足、并列或置信度不足时使用 Conventional Commits。支持识别 Conventional、纯文本、`[type]`、工单前缀和 Gitmoji；`commit.policy` 可固定为 `conventional` 或设为 `off`。根据完整差异生成单行中文 `Summary`，并用分析器校验后再提交。`-WhatIf -OutputFormat Json` 会在 `commitStyle` 返回选择结果、置信度和回退原因。
+
+本操作明确允许等价于 `git add -A` 的全量暂存，但仍遵守 `.gitignore`；发现 `.env`、私钥、凭据文件或密钥内容时停止并恢复原暂存区。远程领先或分叉时停止，不自动合并或变基。
 即使 `.codex-release.json` 的发布分支与当前分支不同，也必须提交并推送当前分支；配置分支只约束正式 `Release`。
 
 ### 3. Release
 
-正式发布要求稳定语义版本、单行中文总结和中文 Release Notes：
+正式发布要求稳定语义版本、符合仓库提交风格的单行中文总结和中文 Release Notes：
 
 ```powershell
 $notes = @"
@@ -78,11 +85,11 @@ $notes = @"
 - 修复：第二项用户可感知变化。
 "@
 
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File $invoke -Operation Release -Version vX.Y.Z -Summary "一句中文总结" `
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File $invoke -Operation Release -Version vX.Y.Z -Summary "chore(release): 一句中文总结" `
   -ReleaseNotes $notes -RepositoryRoot "<仓库根目录>"
 ```
 
-依次执行 `Plan -> Prepare -> Commit -> Publish`：更新版本、必要时本地构建、全量安全提交、原子推送分支和标签、等待 GitHub Actions、校验全部产物并公开草稿 Release。若本地构建收据、源文件指纹和产物 SHA256 全部有效，则跳过本地程序构建；提交前必须再次验证指纹。构建期间源码变化时用新状态重建一次，仍持续变化则停止。GitHub Actions 始终重新构建正式发布包。
+依次执行 `Plan -> Prepare -> Commit -> Publish`：更新版本、必要时本地构建、全量安全提交、原子推送分支和标签、等待 GitHub Actions、校验全部产物并公开草稿 Release。若本地构建收据、源文件指纹和产物 SHA256 全部有效，则跳过本地程序构建；否则草稿式 GitHub 发布的本地验证产物仍必须写到 `output/<项目名><扩展名>`，不得创建带版本目录。提交前必须再次验证指纹。构建期间源码变化时用新状态重建一次，仍持续变化则停止。GitHub Actions 始终重新构建正式发布包。
 
 工作流已存在时：
 
@@ -90,6 +97,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File $invoke -Operation Relea
 - 兼容的人工发布工作流：用 `-WorkflowPolicy ReuseCompatible` 复用并设为非托管。
 - 不兼容或普通 CI：用 `-WorkflowPolicy CreateSeparate` 保留原文件并创建 `.github/workflows/auto-release.yml`。
 - 未选择策略：默认 `Stop`，绝不覆盖人工工作流。
+
+托管工作流必须具备标签级 `concurrency`、每个任务的 `timeout-minutes`、上传产物的短期 `retention-days` 和任务级最小权限。所有 `uses:` 必须固定到 40 位 commit SHA；版本标签只放在同行注释中，禁止写入浮动 `@vN` 或 `@stable`。
 
 ## 底层发布顺序
 
@@ -105,9 +114,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File $invoke -Operation Relea
   -RepositoryRoot "<仓库根目录>"
 ```
 
-同时读取 `git status --short`、最近版本标签后的提交和当前差异，生成：
+同时读取 `git status --short`、最近版本标签后的提交和当前差异，并分析最近提交信息风格，生成：
 
-- `Summary`：单行中文提交/标签总结。
+- `Summary`：符合已检测风格的单行中文提交/标签总结；无法确定风格时使用 Conventional Commits。
 - `ReleaseNotes`：以配置中的标题开头，列出配置要求数量的中文用户可感知重点。
 
 底层 `Plan` 不暂存文件。只有用户选择 `CommitPush` 或 `Release` 时才允许全量暂存；其他上下文禁止使用 `git add .`、`git add -A` 或等价操作。

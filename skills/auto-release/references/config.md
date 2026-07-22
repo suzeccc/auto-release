@@ -38,6 +38,12 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\invoke-release
 # 强制重新构建本地程序
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\invoke-release.ps1 -Operation LocalBuild -ForceRebuild
 
+# 无副作用预演
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\invoke-release.ps1 -Operation LocalBuild -WhatIf
+
+# 单行 JSON 输出
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\invoke-release.ps1 -Operation LocalBuild -OutputFormat Json
+
 # 提交更改区和暂存区的全部安全更改，并推送当前分支
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\invoke-release.ps1 -Operation CommitPush -Summary "一句中文总结"
 
@@ -48,9 +54,17 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\invoke-release
 
 `LocalBuild` 调用 `prepare.localCommands`，未声明时兼容回退到 `prepare.commands`；它不运行 `version.updates`，也不验证 GitHub 工作流的标签触发器、发布权限或草稿 Release。`prepare.bootstrapCommands` 根据 `prepare.bootstrapInputs` 的哈希缓存，输入未变化时不重复安装依赖。构建产物统一复制到 `prepare.localOutputDirectory`，默认是 `output`；目标文件使用 `<projectName><扩展名>`，不含版本号，目录或文件不存在时自动创建。
 
-执行器只按完整路径终止配置产物和上次收据记录的 EXE，不扫描或终止输出目录中的无关程序。`prepare.artifacts[].localName` 可覆盖单个本地产物文件名，正式发布使用的 `destination` 不受影响。成功后在 `.git/auto-release/local-build.json` 保存忽略发布版本值的源文件指纹、底层执行器返回的精确产物清单和 SHA256，并删除上次由 Skill 管理、这次不再生成的旧输出。默认复用有效收据；`-ForceRebuild` 强制重新构建。正式发布提交前再次校验源码指纹，避免构建后变化的文件进入发布提交。
+执行器只按完整路径终止配置产物和上次收据记录的 EXE，不扫描或终止输出目录中的无关程序。`prepare.localArtifacts` 控制本地快速构建产物，`prepare.artifacts` 控制正式构建产物；`prepare.localSearchRoots` 为无法提前确定完整文件名的本地产物提供受限搜索根目录。`localName` 可覆盖统一输出文件名。`prepare.localOutputDirectory` 必须是无版本、无标签占位符的稳定路径。草稿式 GitHub Release 的正式操作只把本地验证产物写入该规范目录，不采用 `artifacts[].destination` 中的版本路径；GitHub Actions 负责正式发布包。成功后在 `.git/auto-release/local-build.json` 保存忽略发布版本值的源文件指纹、底层执行器返回的精确产物清单和 SHA256，并删除上次由 Skill 管理、这次不再生成的旧输出。默认复用有效收据；`-ForceRebuild` 强制重新构建。正式发布提交前再次校验源码指纹，避免构建后变化的文件进入发布提交。
 
 `CommitPush` 和 `Release` 明确执行全量暂存，包含已暂存、未暂存、删除和未跟踪文件，并遵守 `.gitignore`。提交前拒绝 Git 冲突、明显凭据文件、私钥和常见 Token；失败时恢复原暂存区。
+
+提交前可独立查看风格分析结果：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\commit-style.ps1 -RepositoryRoot .
+```
+
+默认读取最近 30 条非合并提交。样本至少为 3 且最高占比达到 60% 时沿用检测到的 Conventional、纯文本、`[type]`、工单前缀或 Gitmoji 风格；样本不足、并列或置信度不足时回退到 Conventional Commits。统一入口会再次校验 `Summary`，预演 JSON 在 `commitStyle` 中返回选择结果。
 
 生成的工作流首部包含以下托管标记：
 
@@ -78,6 +92,13 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\invoke-release
   "remote": "origin",
   "remoteUrlPattern": "github\\.com[:/]owner/repository(?:\\.git)?$",
   "tagPrefix": "v",
+  "commit": {
+    "policy": "auto",
+    "analyzeCount": 30,
+    "minimumSamples": 3,
+    "confidenceThreshold": 0.6,
+    "fallback": "conventional"
+  },
   "version": {
     "read": {
       "path": "package.json",
@@ -105,6 +126,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\invoke-release
       { "name": "Build", "command": "npm run build" },
       { "name": "Pack", "command": "if not exist dist mkdir dist && npm pack --pack-destination dist" }
     ],
+    "localArtifacts": [],
+    "localSearchRoots": ["dist"],
     "commands": [
       { "name": "Tests", "command": "npm test" },
       { "name": "Build", "command": "npm run build" },
@@ -153,6 +176,11 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\invoke-release
 - `projectName`、`branch`、`remote`：必填。
 - `remoteUrlPattern`：可选；设置后必须匹配 `git remote get-url <remote>`。
 - `tagPrefix`：可选，默认 `v`。
+- `commit.policy`：`auto` 自动沿用可靠的最近风格；`conventional` 始终要求 Conventional Commits；`off` 仅保留单行中文校验。
+- `commit.analyzeCount`：分析的最近非合并提交数量，必须为正数。
+- `commit.minimumSamples`：确认历史风格所需的最少样本，必须为正数且不大于 `analyzeCount`。
+- `commit.confidenceThreshold`：最高风格占比阈值，范围为 `(0, 1]`。
+- `commit.fallback`：固定为 `conventional`，保证无法确定时使用 Conventional Commits。
 - `version.read.pattern`：必须包含命名捕获组 `(?<version>...)`。
 - `version.updates`：每项在升级版本时执行；`expectedMatches` 必须与实际匹配数完全一致。
 - `prepare.parallel`：为 `true` 时并行执行所选构建命令，并在首个失败后终止兄弟进程。
@@ -161,7 +189,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\invoke-release
 - `prepare.bootstrapCommands`：仅在缓存输入或命令变化时执行的依赖准备步骤；状态保存在 `.git/auto-release/bootstrap.json`。
 - `prepare.localCommands`：`LocalBuild` 使用的快速命令；缺失时回退到 `prepare.commands`。
 - `prepare.commands`：正式 `Prepare` 使用的完整测试和打包命令；Windows 下通过 `cmd.exe` 执行。
-- `prepare.localOutputDirectory`：可选，默认 `output`；`LocalBuild` 在此目录生成不含版本号的本地测试包。
+- `prepare.localArtifacts`：本地快速构建的产物定义；缺失时回退到 `prepare.artifacts`，空数组表示构建后在受限目录中发现本地产物。
+- `prepare.localSearchRoots`：本地产物发现根目录，用于 Electron 自定义输出目录和子目录中的 .NET 项目。
+- `prepare.localOutputDirectory`：可选，默认 `output`；路径禁止 `{version}`、`{tag}`，`LocalBuild` 和草稿式正式发布都在此目录生成不含版本号的本地程序。
 - `prepare.artifacts`：可为空；`destination` 只控制正式发布整理路径，`localName` 可选且只控制统一的本地产物文件名。
 - `publish.workflow`：可省略；存在时按标签和 `HEAD` SHA 等待对应 GitHub Actions 工作流。
 
@@ -198,17 +228,17 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\invoke-release
 ### Python
 
 - 从 `pyproject.toml` 读取静态 PEP 621 或 Poetry 名称与版本。
-- 识别 pip、uv 或 Poetry，运行测试后同时构建 wheel 和 sdist。
+- 识别 pip、uv 或 Poetry；本地快速构建只生成 wheel，正式构建生成 wheel 和 sdist。
 
 ### Rust
 
 - 从根目录 `Cargo.toml` 的 `[package]` 读取名称与版本；仅工作区项目需手动配置。
-- 运行 `cargo test --all` 与 `cargo package`，发布 `.crate`。
+- 本地运行 `cargo test --all` 和 `cargo build --release`；正式构建执行 `cargo package` 并发布 `.crate`。
 
 ### .NET
 
 - 自动处理仅含一个 `.csproj`、`.fsproj` 或 `.vbproj` 的仓库。
-- 使用 `<Version>`/`<VersionPrefix>`；缺失时创建 `VERSION`，运行 restore、test 和 pack，发布 `.nupkg`。
+- 使用 `<Version>`/`<VersionPrefix>`；缺失时创建 `VERSION`。本地执行 restore、test 和 build，正式构建执行 pack 并发布 `.nupkg`。
 
 ### Java
 
@@ -233,12 +263,24 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\invoke-release
 ### Electron
 
 - 从 Electron 依赖和 package scripts 识别桌面项目。
-- 使用项目已有构建脚本，将六个平台输出整理为确定名称的压缩包。
+- 本地使用当前平台的项目构建脚本和自定义输出目录；正式工作流将六个平台输出整理为确定名称的压缩包。
 
 ### Docker
 
 - Dockerfile 作为唯一主清单时自动识别；混合项目可显式指定 `-ProjectType docker`。
 - 构建并推送 `linux/amd64`、`linux/arm64` GHCR 镜像，发布带 digest 的文本清单。
+
+## 托管工作流保护
+
+自动生成的工作流具备：
+
+- `concurrency`：同一标签只允许一条发布链执行，且不自动取消已开始的发布。
+- `timeout-minutes`：构建和发布任务分别限制最长运行时间。
+- `permissions`：工作流默认只读，仅创建 Release 或推送容器的任务获取写权限。
+- `retention-days`：中间产物默认只保留一天。
+- Action 固定：所有 `uses:` 使用 40 位 commit SHA，同行注释记录对应主版本。
+
+`-WhatIf` 返回计划但不生成配置、不更新版本、不运行构建、不暂存、不提交、不打标签、不推送。`-OutputFormat Json` 成功时返回操作、状态、复用状态、产物或提交信息；失败时返回稳定 `errorCode` 和停止阶段。
 
 ## 最小无工作流示例
 

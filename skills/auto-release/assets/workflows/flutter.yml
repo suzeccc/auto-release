@@ -9,7 +9,11 @@ on:
       - "v*"
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -53,13 +57,14 @@ jobs:
             source: build/web
             kind: zip
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v6
-      - uses: subosito/flutter-action@v2
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
         with:
           channel: stable
           cache: true
-      - uses: actions/setup-java@v5
+      - uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5
         if: startsWith(matrix.platform, 'android-')
         with:
           distribution: temurin
@@ -84,17 +89,21 @@ jobs:
           if ("${{ matrix.kind }}" -eq "file") { Copy-Item -LiteralPath $source -Destination $asset }
           elseif ("${{ matrix.kind }}" -eq "tar") { tar -czf $asset -C $source . }
           else { Compress-Archive -Path (Join-Path $source "*") -DestinationPath $asset }
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ${{ matrix.platform }}
           path: release-assets/*
           if-no-files-found: error
+          retention-days: 1
 
   release:
     needs: build
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           path: release-assets
           merge-multiple: true
