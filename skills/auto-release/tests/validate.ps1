@@ -73,7 +73,12 @@ function Write-TestUtf8([string]$Path, [string]$Content) {
   if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
     New-Item -ItemType Directory -Path $directory -Force | Out-Null
   }
-  [IO.File]::WriteAllText($Path, $Content, [Text.UTF8Encoding]::new($false))
+  try {
+    [IO.File]::WriteAllText($Path, $Content, [Text.UTF8Encoding]::new($false))
+  }
+  catch {
+    throw "Failed to write test fixture '$Path': $($_.Exception.Message)"
+  }
 }
 
 foreach ($path in @($script, $setupScript, $invokeScript, $commitStyleScript, $ignoreScript, $utils, $reference, $ignoreReference) + $workflowTemplates) {
@@ -374,6 +379,74 @@ try {
 }
 finally {
   Remove-TestDirectory $ignoreRoot
+}
+
+$ignoreRegressionRoot = New-TestDirectory "ignore-regression"
+try {
+  & git -C $ignoreRegressionRoot config user.name "Ignore Regression Test"
+  & git -C $ignoreRegressionRoot config user.email "ignore-regression@example.invalid"
+  $unicodeDirectory = -join @([char]0x6587, [char]0x6863)
+  $unicodeFileName = (-join @([char]0x5FEB, [char]0x901F, [char]0x4E86, [char]0x89E3)) + ".md"
+  $unicodeIgnorePath = "$unicodeDirectory/.gitignore"
+  $unicodeDocumentPath = "$unicodeDirectory/$unicodeFileName"
+  Write-TestUtf8 (Join-Path $ignoreRegressionRoot ".gitignore") "reports/`n.superpowers/`ndeliverables/`ndocs/superpowers/`n"
+  Write-TestUtf8 (Join-Path $ignoreRegressionRoot ".codegraph\.gitignore") "*`n!.gitignore`n"
+  Write-TestUtf8 (Join-Path $ignoreRegressionRoot ".superpowers\brainstorm\.last-token") "local-agent-token`n"
+  Write-TestUtf8 (Join-Path $ignoreRegressionRoot ".claude\settings.local.json") "{}"
+  Write-TestUtf8 (Join-Path $ignoreRegressionRoot ".cursor\rules\project.mdc") "Project rule`n"
+  Write-TestUtf8 (Join-Path $ignoreRegressionRoot ".agents\skills\sample\SKILL.md") "# Shared skill`n"
+  Write-TestUtf8 (Join-Path $ignoreRegressionRoot ".codex\sessions\session.json") "{}"
+  Write-TestUtf8 (Join-Path $ignoreRegressionRoot ".hbuilderx\state.json") "{}"
+  Write-TestUtf8 (Join-Path $ignoreRegressionRoot ".aider.chat.history.md") "# Local chat`n"
+  Write-TestUtf8 (Join-Path $ignoreRegressionRoot "playwright-report\index.html") "report`n"
+  Write-TestUtf8 (Join-Path $ignoreRegressionRoot "reports\result.json") "{}"
+  Write-TestUtf8 (Join-Path $ignoreRegressionRoot "deliverables\final.pptx") "fixture`n"
+  Write-TestUtf8 (Join-Path $ignoreRegressionRoot "artifacts\build.zip") "fixture`n"
+  Write-TestUtf8 (Join-Path $ignoreRegressionRoot "generated\client.ts") "generated`n"
+  Write-TestUtf8 (Join-Path $ignoreRegressionRoot "screenshots\home.png") "fixture`n"
+  Write-TestUtf8 (Join-Path $ignoreRegressionRoot "snapshots\home.snap") "fixture`n"
+  Write-TestUtf8 (Join-Path $ignoreRegressionRoot "docs\superpowers\plan.md") "# Local plan`n"
+  Write-TestUtf8 (Join-Path $ignoreRegressionRoot $unicodeIgnorePath) "*.tmp`n"
+  Write-TestUtf8 (Join-Path $ignoreRegressionRoot $unicodeDocumentPath) "# Unicode path fixture`n"
+  & git -C $ignoreRegressionRoot add -f -- .gitignore .codegraph/.gitignore .superpowers/brainstorm/.last-token .claude/settings.local.json .cursor/rules/project.mdc .agents/skills/sample/SKILL.md .codex/sessions/session.json .hbuilderx/state.json .aider.chat.history.md playwright-report/index.html reports/result.json deliverables/final.pptx artifacts/build.zip generated/client.ts screenshots/home.png snapshots/home.snap docs/superpowers/plan.md $unicodeIgnorePath $unicodeDocumentPath
+  & git -C $ignoreRegressionRoot commit -m "Initial ignore regression fixture" | Out-Null
+  if ($LASTEXITCODE -ne 0) { throw "ignore regression fixture commit failed" }
+
+  $ignoreRegressionOutput = & $shell -NoProfile -ExecutionPolicy Bypass -File $invokeScript `
+    -Operation Ignore -IgnoreMode Audit -RepositoryRoot $ignoreRegressionRoot -OutputFormat Json
+  if ($LASTEXITCODE -ne 0) { throw "Ignore regression Audit process failed" }
+  $ignoreRegression = ($ignoreRegressionOutput | Select-Object -Last 1) | ConvertFrom-Json
+  Assert-Equal $ignoreRegression.status "planned" "Ignore regression Audit returned the wrong status"
+  Assert-Match (@($ignoreRegression.plan.ignoreFiles) -join ',') ([regex]::Escape($unicodeIgnorePath)) "Ignore Audit did not preserve a Unicode Git path"
+  $safeIgnorePatterns = @($ignoreRegression.plan.rules.pattern) + @($ignoreRegression.plan.alreadyCovered.pattern)
+  Assert-Match ($safeIgnorePatterns -join ',') '/\.codegraph/' "Ignore Audit did not classify local CodeGraph state"
+  Assert-Match (@($ignoreRegression.plan.alreadyCovered.pattern) -join ',') '/\.superpowers/' "Ignore Audit did not recognize the existing agent-state rule"
+  Assert-Match ($safeIgnorePatterns -join ',') '/\.claude/settings\.local\.json' "Ignore Audit did not classify Claude local settings"
+  Assert-Match ($safeIgnorePatterns -join ',') '/\.codex/sessions/' "Ignore Audit did not classify Codex local sessions"
+  Assert-Match ($safeIgnorePatterns -join ',') '/\.aider\.chat\.history\.md' "Ignore Audit did not classify Aider chat history"
+  Assert-Match ($safeIgnorePatterns -join ',') '/\.hbuilderx/' "Ignore Audit did not classify HBuilderX local state"
+  Assert-Match ($safeIgnorePatterns -join ',') '/playwright-report/' "Ignore Audit did not classify Playwright reports"
+  Assert-Match (@($ignoreRegression.plan.review.pattern) -join ',') '/reports/' "Ignore Audit did not flag reports for review"
+  Assert-Match (@($ignoreRegression.plan.review.pattern) -join ',') '/deliverables/' "Ignore Audit did not flag deliverables for review"
+  Assert-Match (@($ignoreRegression.plan.review.pattern) -join ',') '/\.cursor/' "Ignore Audit did not flag Cursor project rules for review"
+  Assert-Match (@($ignoreRegression.plan.review.pattern) -join ',') '/\.agents/' "Ignore Audit did not flag shared agent skills for review"
+  Assert-Match (@($ignoreRegression.plan.review.pattern) -join ',') '/artifacts/' "Ignore Audit did not flag ambiguous artifacts for review"
+  Assert-Match (@($ignoreRegression.plan.review.pattern) -join ',') '/generated/' "Ignore Audit did not flag generated sources for review"
+  Assert-Match (@($ignoreRegression.plan.review.pattern) -join ',') '/screenshots/' "Ignore Audit did not flag screenshots for review"
+  Assert-Match (@($ignoreRegression.plan.review.pattern) -join ',') '/snapshots/' "Ignore Audit did not flag snapshots for review"
+  Assert-Match (@($ignoreRegression.plan.untrackPaths) -join ',') '\.codegraph/\.gitignore' "Ignore Audit did not identify tracked CodeGraph state"
+  Assert-Match (@($ignoreRegression.plan.untrackPaths) -join ',') '\.superpowers/brainstorm/\.last-token' "Ignore Audit did not identify tracked agent state"
+  Assert-Match (@($ignoreRegression.plan.untrackPaths) -join ',') '\.claude/settings\.local\.json' "Ignore Audit did not identify tracked Claude local settings"
+  Assert-Match (@($ignoreRegression.plan.untrackPaths) -join ',') '\.hbuilderx/state\.json' "Ignore Audit did not identify tracked HBuilderX state"
+  $trackedButIgnoredPaths = @($ignoreRegression.plan.trackedButIgnored.path) -join ','
+  Assert-Match $trackedButIgnoredPaths '\.superpowers/brainstorm/\.last-token' "Ignore Audit missed tracked agent state already covered by .gitignore"
+  Assert-Match $trackedButIgnoredPaths 'reports/result\.json' "Ignore Audit missed a tracked report already covered by .gitignore"
+  Assert-Match $trackedButIgnoredPaths 'deliverables/final\.pptx' "Ignore Audit missed a tracked deliverable already covered by .gitignore"
+  Assert-Match $trackedButIgnoredPaths 'docs/superpowers/plan\.md' "Ignore Audit missed an unknown tracked path already covered by .gitignore"
+  Assert-Match (@($ignoreRegression.plan.sensitivePaths) -join ',') '\.superpowers/brainstorm/\.last-token' "Ignore Audit did not classify the local agent token as sensitive"
+}
+finally {
+  Remove-TestDirectory $ignoreRegressionRoot
 }
 
 $nodeRoot = New-TestDirectory "node"

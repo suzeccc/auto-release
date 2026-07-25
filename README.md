@@ -1,6 +1,8 @@
 # Auto Release
 
-让 Codex 帮你完成**本地打包、提交推送和 GitHub 正式发布**。
+[![License: MIT](https://img.shields.io/github/license/suzeccc/auto-release?style=flat-square)](LICENSE)
+
+让 Codex 帮你完成 **README 优化、本地打包、提交推送和 GitHub 正式发布**。
 
 你只需要说明想做什么，Auto Release 会识别项目类型、选择正确的构建方式，并在需要时创建 GitHub Actions 发布工作流。
 
@@ -8,12 +10,13 @@
 
 | 你想做的事 | Auto Release 会做什么 | 不会做什么 |
 |---|---|---|
+| 优化 README | 识别项目类型和主要读者，重构内容层级并验证链接、命令与徽章 | 不套用固定比例、不虚构项目状态 |
 | 本地测试打包 | 构建当前项目，把结果放到 `output/` | 不改版本、不提交、不推送 |
 | 检查忽略规则 | 深度检查并补全 `.gitignore`，可停止跟踪本地产物 | 不删除本地文件、不重写历史 |
 | 提交并推送 | 检查改动和敏感文件，生成提交信息，推送当前分支 | 不自动合并、不变基、不强推 |
 | 正式发布 | 更新版本、测试、构建、提交、打标签、运行 GitHub Actions、发布 GitHub Release | 发布失败时不会公开不完整的 Release |
 
-如果你的表达不够明确，Codex 会让你从 `LocalBuild`、`Ignore`、`CommitPush`、`Release` 四种操作中选择，不会把“本地打包”误认为正式发布。
+如果你的表达不够明确，Codex 会让你从 `README`、`LocalBuild`、`Ignore`、`CommitPush`、`Release` 五种操作中选择，不会把“本地打包”误认为正式发布。
 
 ## 支持哪些项目
 
@@ -50,6 +53,12 @@ python -X utf8 "$env:USERPROFILE\.codex\skills\.system\skill-installer\scripts\i
 
 进入任意本地 Git 项目，直接告诉 Codex：
 
+### 想优化项目说明
+
+```text
+重构 README，按项目类型和主要读者安排内容，该加徽章的加徽章
+```
+
 ### 只想在本地试一下
 
 ```text
@@ -84,9 +93,21 @@ python -X utf8 "$env:USERPROFILE\.codex\skills\.system\skill-installer\scripts\i
 
 首次使用时，Auto Release 会先识别项目并生成项目专用配置。以后会复用这份配置，不会每次重新猜测。
 
-## 三种操作
+## 五种操作
 
-### 1. LocalBuild：本地测试打包
+### 1. README：创建或优化项目自述
+
+适合新建仓库说明、重构过时 README，或在公开项目前完成内容审计。
+
+- 识别应用、库、SDK、CLI、框架、基础设施或内部项目。
+- 明确产品使用者、集成开发者、部署运维者、贡献者和维护者的优先级。
+- 按主要读者的最短成功路径动态安排内容，不使用固定的用户/开发比例。
+- 检查功能、状态、命令、图片、相对链接和文档入口是否真实有效。
+- 根据项目类型选择 Shields.io 徽章；动态状态必须连接真实数据源。
+- 详细 API、索引、联调和故障排查下沉到 `docs/`。
+- 只修改文档，不自动暂存、提交或推送。
+
+### 2. LocalBuild：本地测试打包
 
 适合开发过程中快速验证程序是否能正常构建。
 
@@ -99,7 +120,7 @@ python -X utf8 "$env:USERPROFILE\.codex\skills\.system\skill-installer\scripts\i
 
 需要忽略缓存重新构建时，告诉 Codex“强制重新打包”。
 
-### 2. Ignore：检查并补全忽略规则
+### 3. Ignore：检查并补全忽略规则
 
 适合提交项目或公开 GitHub 仓库前检查本地文件、构建产物和缓存。
 
@@ -113,7 +134,7 @@ python -X utf8 "$env:USERPROFILE\.codex\skills\.system\skill-installer\scripts\i
 
 `.gitignore` 对已经跟踪的文件无效；这类文件必须明确选择“补全并停止跟踪”。任何应用操作失败都会恢复 `.gitignore` 和原暂存区。
 
-### 3. CommitPush：提交并推送
+### 4. CommitPush：提交并推送
 
 适合完成一轮修改后，把全部安全改动提交到当前分支。
 
@@ -143,7 +164,7 @@ perf(frontend): 优化按需加载与运行时开销
 
 两个提交都在临时事务分支成功创建并通过检查后，Auto Release 才会把它们一起推送。无法可靠分类时自动退回一个提交，不会为了增加提交数量强行拆分。
 
-### 4. Release：正式发布
+### 5. Release：正式发布
 
 适合发布稳定版本，例如 `v1.2.3`。
 

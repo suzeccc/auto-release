@@ -12,7 +12,7 @@ $invoke = "$env:USERPROFILE\.codex\skills\auto-release\scripts\invoke-release.ps
 & $invoke -Operation Ignore -IgnoreMode ApplyAndUntrack -RepositoryRoot "<仓库根目录>"
 ```
 
-- `Audit`：识别项目类型、现有忽略来源、候选规则、已跟踪匹配、敏感路径、受保护路径和历史生成路径。
+- `Audit`：识别项目类型、现有忽略来源、候选规则、已跟踪匹配、已被忽略但仍被跟踪的文件、敏感路径、受保护路径和历史生成路径。
 - `Apply`：只把高置信度缺失规则追加到根 `.gitignore` 的托管区块，不暂存、提交或推送。
 - `ApplyAndUntrack`：在 `Apply` 基础上对计划中的精确已跟踪文件执行 `git rm --cached`；本地文件内容和 SHA256 必须保持不变。
 
@@ -34,19 +34,34 @@ $invoke = "$env:USERPROFILE\.codex\skills\auto-release\scripts\invoke-release.ps
     }
   ],
   "untrackPaths": ["previews/example.html"],
+  "trackedButIgnored": [
+    {
+      "path": "reports/result.json",
+      "pattern": "reports/",
+      "source": ".gitignore",
+      "line": 8
+    }
+  ],
   "sensitivePaths": [],
   "protectedPaths": ["package-lock.json"]
 }
 ```
 
+`trackedButIgnored` 是反向审计结果：`.gitignore` 只影响未跟踪文件，已进入 Git index 的文件即使命中规则也会继续上传。该列表报告命中的路径、规则及来源，但不会把未知目录自动加入 `untrackPaths`；需要人工确认后再停止跟踪。
+
 ## 分类规则
 
 - 只自动应用置信度至少 0.8 的候选规则。
 - 已跟踪文件默认进入 `review`；只有明确的构建、本地输出或无引用预览允许进入安全计划。
-- 实际 `.env`、私钥和签名凭据存在时停止应用，不能用忽略规则代替凭据处置。
+- `.codegraph/`、`.superpowers/`、`.planning/`、`.playwright-cli/` 作为明确的 Agent 本地状态审计。
+- Claude、Cursor、Codex、Gemini、Aider、Serena、Windsurf、Cline、Roo、Continue、OpenCode 等工具只自动处理明确的缓存、会话、历史、临时 worktree 和 `settings.local.json`；整个工具目录可能包含共享规则、技能或项目配置，必须进入 `review`。
+- HBuilderX 和编辑器本地历史可作为本地状态；`.vscode/`、`.fleet/`、`.zed/` 可能是团队配置，必须进入 `review`。
+- Playwright、Allure、Coverage、NYC、JUnit 等明确生成的测试报告可进入安全计划；`reports/`、`deliverables/`、`artifacts/`、`generated/`、`screenshots/`、`snapshots/`、`tmp/`、`temp/` 可能包含正式成果、生成源码或测试基线，必须进入 `review`，不得擅自整体忽略。
+- 实际 `.env`、私钥、签名凭据或 `.last-token` 等 Agent 令牌存在时停止应用，不能用忽略规则代替凭据处置。
 - 锁文件、`.codex-release.json` 和 `.github/workflows/**` 为受保护路径；新规则不得改变它们的可见性。
 - `build/`、`dist/`、`target/`、`bin/`、`obj/` 等规则只有检测到对应工具链时才生成；发现已跟踪引用时转入 `review`。
 - `.env.*` 必须与 `!.env.example` 一起管理。
+- Git 文件清单使用 NUL 分隔并关闭 `core.quotepath` 转义，中文和其他 Unicode 路径必须以原文进入计划。
 
 ## 托管区块
 
