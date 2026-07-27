@@ -60,14 +60,14 @@ try {
   if ($LASTEXITCODE -ne 0) { throw "initial push failed" }
 
   $standaloneStyle = (& $commitStyleScript -RepositoryRoot $planRoot) | ConvertFrom-Json
-  Assert-Equal $standaloneStyle.selectedStyle "conventional" "Standalone analyzer did not use Conventional fallback"
-  Assert-Equal $standaloneStyle.reason "insufficient-samples" "Standalone analyzer reported the wrong fallback reason"
+  Assert-Equal $standaloneStyle.selectedStyle "conventional" "Standalone analyzer did not require Conventional Commits"
+  Assert-Equal $standaloneStyle.reason "required" "Standalone analyzer reported the wrong format reason"
   Assert-Equal $standaloneStyle.commitLanguage.selectedLanguage "Chinese" "Standalone analyzer did not preserve the compatible default language"
   $englishStandalone = (& $commitStyleScript -RepositoryRoot $planRoot -PromptLanguage English -Summary "chore: update release fixture") | ConvertFrom-Json
   Assert-Equal $englishStandalone.commitLanguage.selectedLanguage "English" "Standalone analyzer did not accept an English prompt language"
   Assert-Throws {
     & $commitStyleScript -RepositoryRoot $planRoot -Summary "Plain summary"
-  } "Conventional Commits fallback" "Standalone analyzer accepted a non-Conventional summary"
+  } "must follow Conventional Commits" "Standalone analyzer accepted a non-Conventional summary"
 
   $plan = & $script `
     -Mode Plan `

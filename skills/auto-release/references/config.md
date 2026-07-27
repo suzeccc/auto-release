@@ -58,7 +58,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\invoke-release
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\invoke-release.ps1 -Operation Ignore -IgnoreMode Audit
 
 # 提交更改区和暂存区的全部安全更改，并推送当前分支
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\invoke-release.ps1 -Operation CommitPush -PromptLanguage Chinese -Summary "一句中文总结"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\invoke-release.ps1 -Operation CommitPush -PromptLanguage Chinese -Summary "chore: 整理项目改动"
 
 # 按计划创建多个提交，全部成功后统一推送
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\invoke-release.ps1 `
@@ -67,7 +67,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\invoke-release
 
 # 更新版本、提交推送、构建全部包并发布 GitHub
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\invoke-release.ps1 -Operation Release -Version v1.2.3 `
-  -PromptLanguage Chinese -Summary "一句中文总结" -ReleaseNotes "<中文 Release Notes>"
+  -PromptLanguage Chinese -Summary "chore(release): 发布新版本" -ReleaseNotes "<中文 Release Notes>"
 ```
 
 `LocalBuild` 调用 `prepare.localCommands`，未声明时兼容回退到 `prepare.commands`；它不运行 `version.updates`，也不验证 GitHub 工作流的标签触发器、发布权限或草稿 Release。`prepare.bootstrapCommands` 根据 `prepare.bootstrapInputs` 的哈希缓存，输入未变化时不重复安装依赖。构建产物统一复制到 `prepare.localOutputDirectory`，默认是 `output`；目标文件使用 `<projectName><扩展名>`，不含版本号，目录或文件不存在时自动创建。
@@ -97,15 +97,15 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\invoke-release
 }
 ```
 
-每个 `summary` 都必须符合检测到的仓库风格，并让描述部分匹配统一的 `PromptLanguage`。Conventional Commit 类型和 scope 不参与语言判断。建议保持 2 至 4 组：实现和对应测试同组、清单和锁文件同组、源文件和生成文件同组；小组、低置信度组和相互依赖组应合并。执行器先验证计划和全部敏感文件，再在临时事务分支逐组运行暂存检查并提交。任一步失败时恢复原分支、原暂存区和全部工作区改动；全部成功后快进原分支并只推送一次。`-WhatIf -OutputFormat Json` 会在 `commitPlan` 返回规范化计划，并在 `commitLanguage` 返回语言来源和回退原因。
+每个 `summary` 都必须使用 Conventional Commits，并让冒号后的描述匹配统一的 `PromptLanguage`。类型和 scope 不参与语言判断。建议保持 2 至 4 组：实现和对应测试同组、清单和锁文件同组、源文件和生成文件同组；小组、低置信度组和相互依赖组应合并。执行器先验证计划和全部敏感文件，再在临时事务分支逐组运行暂存检查并提交。任一步失败时恢复原分支、原暂存区和全部工作区改动；全部成功后快进原分支并只推送一次。`-WhatIf -OutputFormat Json` 会在 `commitPlan` 返回规范化计划，并在 `commitLanguage` 返回语言来源和回退原因。
 
-提交前可独立查看风格分析结果：
+提交前可独立验证格式和提示词语言：
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\commit-style.ps1 -RepositoryRoot .
 ```
 
-默认读取最近 30 条非合并提交。样本至少为 3 且最高占比达到 60% 时沿用检测到的 Conventional、纯文本、`[type]`、工单前缀或 Gitmoji 风格；样本不足、并列或置信度不足时回退到 Conventional Commits。`PromptLanguage` 接受 `Chinese`、`English` 或 `Auto`；前两项来自当前用户提示词，`Auto` 才分析历史提交描述并在无法确定时回退到英文。统一入口会再次校验 `Summary`，预演 JSON 分别在 `commitStyle` 和 `commitLanguage` 中返回选择结果。
+提交格式固定为 `type(scope): 描述` 或 `type: 描述`，可用 `!` 标记破坏性变更；不再分析历史提交来切换格式。`PromptLanguage` 接受 `Chinese`、`English` 或 `Auto`；前两项来自当前用户提示词，只有 `Auto` 会读取最近提交的描述语言，并在无法确定时回退到英文。统一入口会再次校验 `Summary`，预演 JSON 分别在兼容字段 `commitStyle` 和 `commitLanguage` 中返回格式与语言结果。
 
 生成的工作流首部包含以下托管标记：
 
@@ -135,7 +135,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\commit-style.p
   "remoteUrlPattern": "github\\.com[:/]owner/repository(?:\\.git)?$",
   "tagPrefix": "v",
   "commit": {
-    "policy": "auto",
+    "policy": "conventional",
     "analyzeCount": 30,
     "minimumSamples": 3,
     "confidenceThreshold": 0.6,
@@ -219,11 +219,11 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\commit-style.p
 - `githubRepository`：可选；使用 `OWNER/REPO` 或 GitHub Enterprise 的 `HOST/OWNER/REPO`。未设置时从配置远端 URL 推导；无法可靠推导时正式发布停止。所有 `gh run`、`gh release` 命令都显式绑定该仓库。
 - `remoteUrlPattern`：可选；设置后必须匹配 `git remote get-url <remote>`。
 - `tagPrefix`：可选，默认 `v`。
-- `commit.policy`：`auto` 自动沿用可靠的最近风格；`conventional` 始终要求 Conventional Commits；`off` 关闭风格约束，但仍保留单行和 `PromptLanguage` 描述语言校验。
-- `commit.analyzeCount`：分析的最近非合并提交数量，必须为正数。
-- `commit.minimumSamples`：确认历史风格所需的最少样本，必须为正数且不大于 `analyzeCount`。
-- `commit.confidenceThreshold`：最高风格占比阈值，范围为 `(0, 1]`。
-- `commit.fallback`：固定为 `conventional`，保证无法确定时使用 Conventional Commits。
+- `commit.policy`：新配置固定为 `conventional`。旧配置中的 `auto` 和 `off` 仍可读取，但运行时统一归一化为 `conventional`，不能关闭格式校验。
+- `commit.analyzeCount`：`PromptLanguage Auto` 分析的最近非合并提交数量，必须为正数。
+- `commit.minimumSamples`：确认历史描述语言所需的最少样本，必须为正数且不大于 `analyzeCount`。
+- `commit.confidenceThreshold`：历史描述语言的最高占比阈值，范围为 `(0, 1]`。
+- `commit.fallback`：兼容字段，固定为 `conventional`。
 - `version.read.pattern`：必须包含命名捕获组 `(?<version>...)`。
 - `version.updates`：每项在升级版本时执行；`expectedMatches` 必须与实际匹配数完全一致。
 - `prepare.parallel`：为 `true` 时并行执行所选构建命令，并在首个失败后终止兄弟进程。

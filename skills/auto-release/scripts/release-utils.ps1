@@ -10,34 +10,17 @@ function Get-CommitConfigProperty($Config, [string]$Name, $Default = $null) {
 function Get-CommitSubjectStyle([string]$Subject) {
   $conventionalPattern = '^[a-z][a-z0-9-]*(?:\([^)]+\))?!?:\s+\S'
   if ($Subject -match $conventionalPattern) { return "conventional" }
-  if ($Subject -match '^[A-Z][A-Z0-9]+-\d+(?::|\s+-?)\s*\S') { return "ticketed" }
-  if ($Subject -match '^\[[^\]]+\]\s+\S') { return "bracketed" }
-  if ($Subject -match '^(?::[a-z0-9_+-]+:|\p{So})\s*\S') { return "gitmoji" }
-  return "plain"
+  return "non-conventional"
 }
 
 function Get-CommitStylePattern([string]$Style) {
-  switch ($Style) {
-    "conventional" { return '^[a-z][a-z0-9-]*(?:\([^)]+\))?!?:\s+\S' }
-    "ticketed" { return '^[A-Z][A-Z0-9]+-\d+(?::|\s+-?)\s*\S' }
-    "bracketed" { return '^\[[^\]]+\]\s+\S' }
-    "gitmoji" { return '^(?::[a-z0-9_+-]+:|\p{So})\s*\S' }
-    "plain" { return '^\S.*$' }
-    "off" { return '^.*$' }
-    default { throw "Unsupported commit style: $Style" }
-  }
+  if ($Style -ne "conventional") { throw "Unsupported commit style: $Style" }
+  return '^[a-z][a-z0-9-]*(?:\([^)]+\))?!?:\s+\S'
 }
 
 function Get-CommitStyleFormat([string]$Style) {
-  switch ($Style) {
-    "conventional" { return "type(scope): summary" }
-    "ticketed" { return "PROJECT-123 summary" }
-    "bracketed" { return "[type] summary" }
-    "gitmoji" { return ":emoji: summary" }
-    "plain" { return "summary" }
-    "off" { return "summary" }
-    default { throw "Unsupported commit style: $Style" }
-  }
+  if ($Style -ne "conventional") { throw "Unsupported commit style: $Style" }
+  return "type(scope): description or type: description"
 }
 
 function Get-CommitStyleAnalysis {
@@ -45,7 +28,7 @@ function Get-CommitStyleAnalysis {
   param(
     [string[]]$Subjects = @(),
     [ValidateSet("auto", "conventional", "off")]
-    [string]$Policy = "auto",
+    [string]$Policy = "conventional",
     [int]$MinimumSamples = 3,
     [double]$ConfidenceThreshold = 0.6
   )
@@ -59,51 +42,26 @@ function Get-CommitStyleAnalysis {
     $Subjects |
       Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) -and [string]$_ -notmatch '^Merge\s' }
   )
-  $counts = [ordered]@{
-    conventional = 0
-    ticketed = 0
-    bracketed = 0
-    gitmoji = 0
-    plain = 0
-  }
+  $counts = [ordered]@{ conventional = 0; nonConventional = 0 }
   foreach ($subject in $filtered) {
     $style = Get-CommitSubjectStyle ([string]$subject)
-    $counts[$style] = [int]$counts[$style] + 1
+    if ($style -eq "conventional") {
+      $counts.conventional = [int]$counts.conventional + 1
+    }
+    else {
+      $counts.nonConventional = [int]$counts.nonConventional + 1
+    }
   }
 
   $sampleCount = $filtered.Count
   $selectedStyle = "conventional"
   $fallbackUsed = $false
-  $reason = "policy"
-  $confidence = 0.0
-
-  if ($Policy -eq "off") {
-    $selectedStyle = "off"
-    $reason = "disabled"
-  }
-  elseif ($Policy -eq "conventional") {
-    $reason = "configured"
-  }
-  elseif ($sampleCount -lt $MinimumSamples) {
-    $fallbackUsed = $true
-    $reason = "insufficient-samples"
-  }
-  else {
-    $highest = ($counts.Values | Measure-Object -Maximum).Maximum
-    $winners = @($counts.GetEnumerator() | Where-Object { $_.Value -eq $highest })
-    $confidence = [Math]::Round(([double]$highest / [double]$sampleCount), 3)
-    if ($winners.Count -ne 1 -or $confidence -lt $ConfidenceThreshold) {
-      $fallbackUsed = $true
-      $reason = if ($winners.Count -ne 1) { "mixed-tie" } else { "low-confidence" }
-    }
-    else {
-      $selectedStyle = [string]$winners[0].Key
-      $reason = "detected"
-    }
-  }
+  $reason = if ($Policy -eq "conventional") { "required" } else { "legacy-policy-normalized" }
+  $confidence = 1.0
 
   return [pscustomobject][ordered]@{
-    policy = $Policy
+    policy = "conventional"
+    configuredPolicy = $Policy
     selectedStyle = $selectedStyle
     sampleCount = $sampleCount
     minimumSamples = $MinimumSamples
@@ -127,7 +85,7 @@ function Get-RepositoryCommitStyleAnalysis {
     $CommitConfig = $null
   )
 
-  $policy = [string](Get-CommitConfigProperty $CommitConfig "policy" "auto")
+  $policy = [string](Get-CommitConfigProperty $CommitConfig "policy" "conventional")
   if ($policy -notin @("auto", "conventional", "off")) {
     throw "Unsupported commit policy: $policy"
   }
@@ -138,21 +96,8 @@ function Get-RepositoryCommitStyleAnalysis {
   if ($analyzeCount -lt 1) { throw "Commit analyzeCount must be positive" }
   if ($fallback -ne "conventional") { throw "Commit fallback must be conventional" }
 
-  $previousPreference = $ErrorActionPreference
-  $ErrorActionPreference = "Continue"
-  try {
-    $subjects = @(& git -C $RepositoryRoot log "-$analyzeCount" --no-merges --pretty=%s 2>&1)
-    $exitCode = $LASTEXITCODE
-  }
-  finally {
-    $ErrorActionPreference = $previousPreference
-  }
-  if ($exitCode -ne 0) {
-    throw "Cannot read recent commit subjects: $($subjects -join [Environment]::NewLine)"
-  }
-  $subjects = @($subjects | Where-Object { $_ -isnot [Management.Automation.ErrorRecord] } | ForEach-Object { [string]$_ })
   return Get-CommitStyleAnalysis `
-    -Subjects $subjects `
+    -Subjects @() `
     -Policy $policy `
     -MinimumSamples $minimumSamples `
     -ConfidenceThreshold $confidenceThreshold
@@ -160,13 +105,18 @@ function Get-RepositoryCommitStyleAnalysis {
 
 function Get-CommitDescription([string]$Subject) {
   if ([string]::IsNullOrWhiteSpace($Subject)) { return "" }
-  switch (Get-CommitSubjectStyle $Subject) {
-    "conventional" { return ($Subject -replace '^[a-z][a-z0-9-]*(?:\([^)]+\))?!?:\s+', '') }
-    "ticketed" { return ($Subject -replace '^[A-Z][A-Z0-9]+-\d+(?::|\s+-?)\s*', '') }
-    "bracketed" { return ($Subject -replace '^\[[^\]]+\]\s+', '') }
-    "gitmoji" { return ($Subject -replace '^(?::[a-z0-9_+-]+:|\p{So})\s*', '') }
-    default { return $Subject }
+  if ($Subject -match '^[a-z][a-z0-9-]*(?:\([^)]+\))?!?:\s+') {
+    return ($Subject -replace '^[a-z][a-z0-9-]*(?:\([^)]+\))?!?:\s+', '')
   }
+  # Legacy prefixes are stripped only so PromptLanguage Auto can classify old history.
+  if ($Subject -match '^[A-Z][A-Z0-9]+-\d+(?::|\s+-?)\s*') {
+    return ($Subject -replace '^[A-Z][A-Z0-9]+-\d+(?::|\s+-?)\s*', '')
+  }
+  if ($Subject -match '^\[[^\]]+\]\s+') { return ($Subject -replace '^\[[^\]]+\]\s+', '') }
+  if ($Subject -match '^(?::[a-z0-9_+-]+:|\p{So})\s*') {
+    return ($Subject -replace '^(?::[a-z0-9_+-]+:|\p{So})\s*', '')
+  }
+  return $Subject
 }
 
 function Get-CommitDescriptionLanguage([string]$Subject) {
@@ -297,11 +247,9 @@ function Assert-CommitSummaryStyle {
     $Analysis
   )
 
-  if ($Analysis.selectedStyle -eq "off") { return }
   $actualStyle = Get-CommitSubjectStyle $Summary
-  if ($actualStyle -ne [string]$Analysis.selectedStyle) {
-    $source = if ($Analysis.fallbackUsed) { "Conventional Commits fallback" } else { "recent commit history" }
-    throw "Summary does not follow $source. Expected $($Analysis.expectedFormat); detected $actualStyle"
+  if ($actualStyle -ne "conventional") {
+    throw "Summary must follow Conventional Commits. Expected $($Analysis.expectedFormat); detected $actualStyle"
   }
 }
 

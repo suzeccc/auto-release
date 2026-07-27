@@ -154,33 +154,37 @@ $conventionalAnalysis = Get-CommitStyleAnalysis -Subjects @(
   "chore: refresh dependencies"
 )
 Assert-Equal $conventionalAnalysis.selectedStyle "conventional" "Conventional commit style was not detected"
-Assert-Equal $conventionalAnalysis.fallbackUsed $false "Stable Conventional style used fallback"
+Assert-Equal $conventionalAnalysis.reason "required" "Conventional format was not reported as required"
+Assert-Equal $conventionalAnalysis.policy "conventional" "Conventional policy was not normalized"
 
-$plainAnalysis = Get-CommitStyleAnalysis -Subjects @(
+$plainAnalysis = Get-CommitStyleAnalysis -Policy auto -Subjects @(
   "Improve search",
   "Fix empty input",
   "Update usage",
   "Refresh dependencies"
 )
-Assert-Equal $plainAnalysis.selectedStyle "plain" "Plain commit style was not detected"
-Assert-Equal $plainAnalysis.reason "detected" "Stable plain style was not selected from history"
+Assert-Equal $plainAnalysis.selectedStyle "conventional" "Plain history changed the required Conventional format"
+Assert-Equal $plainAnalysis.reason "legacy-policy-normalized" "Legacy auto policy was not normalized"
 
-$mixedAnalysis = Get-CommitStyleAnalysis -Subjects @(
+$legacyOffAnalysis = Get-CommitStyleAnalysis -Policy off -Subjects @(
   "feat: add search",
   "[fix] handle empty input",
   "PROJ-123 update usage",
   "Refresh dependencies"
 )
-Assert-Equal $mixedAnalysis.selectedStyle "conventional" "Mixed history did not fall back to Conventional Commits"
-Assert-Equal $mixedAnalysis.fallbackUsed $true "Mixed history did not report fallback"
+Assert-Equal $legacyOffAnalysis.selectedStyle "conventional" "Legacy off policy disabled Conventional validation"
+Assert-Equal $legacyOffAnalysis.configuredPolicy "off" "Legacy policy value was not preserved for diagnostics"
+Assert-Equal $legacyOffAnalysis.reason "legacy-policy-normalized" "Legacy off policy did not report normalization"
 
-$shortAnalysis = Get-CommitStyleAnalysis -Subjects @("Initial project")
-Assert-Equal $shortAnalysis.selectedStyle "conventional" "Short history did not fall back to Conventional Commits"
-Assert-Equal $shortAnalysis.reason "insufficient-samples" "Short history reported the wrong fallback reason"
-Assert-CommitSummaryStyle -Summary "chore: update project" -Analysis $shortAnalysis
-Assert-Throws {
-  Assert-CommitSummaryStyle -Summary "Update project" -Analysis $shortAnalysis
-} "Conventional Commits fallback" "Fallback accepted a non-Conventional summary"
+$requiredAnalysis = Get-CommitStyleAnalysis -Policy conventional -Subjects @("Initial project")
+Assert-CommitSummaryStyle -Summary "chore: update project" -Analysis $requiredAnalysis
+Assert-CommitSummaryStyle -Summary "fix(auth): handle login failure" -Analysis $requiredAnalysis
+Assert-CommitSummaryStyle -Summary "feat(api)!: remove legacy endpoint" -Analysis $requiredAnalysis
+foreach ($invalidSummary in @("Update project", "[fix] update project", "PROJ-123 update project", ":sparkles: update project")) {
+  Assert-Throws {
+    Assert-CommitSummaryStyle -Summary $invalidSummary -Analysis $requiredAnalysis
+  } "must follow Conventional Commits" "Accepted a non-Conventional summary: $invalidSummary"
+}
 
 $chineseLanguage = Get-CommitLanguageAnalysis -PromptLanguage Chinese
 Assert-Equal $chineseLanguage.selectedLanguage "Chinese" "Chinese prompt language was not selected"

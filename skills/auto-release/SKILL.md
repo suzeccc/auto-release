@@ -1,6 +1,6 @@
 ---
 name: auto-release
-description: Detects and configures common application, library, native, mobile, desktop, container, and Codex Skill repositories, then provides audience-aware README creation and optimization, local test builds, deep .gitignore audits and safe rule completion, style-aware single or grouped commit-and-push, formal GitHub releases, dry-run previews, and JSON results. Supports Tauri, Node.js, Go, Python, Rust, .NET, Java, CMake, Flutter, Android, Electron, and Docker. Use when the user asks to create, restructure, audit, or optimize a README/自述文件; build locally without changing version; inspect or complete Git ignore rules; stop tracking generated files without deleting them; classify changes into coherent commits and push them together; configure release automation; or publish a semantic version such as v1.2.3.
+description: Detects and configures common application, library, native, mobile, desktop, container, and Codex Skill repositories, then provides audience-aware README creation and optimization, local test builds, deep .gitignore audits and safe rule completion, Conventional Commits single or grouped commit-and-push, formal GitHub releases, dry-run previews, and JSON results. Supports Tauri, Node.js, Go, Python, Rust, .NET, Java, CMake, Flutter, Android, Electron, and Docker. Use when the user asks to create, restructure, audit, or optimize a README/自述文件; build locally without changing version; inspect or complete Git ignore rules; stop tracking generated files without deleting them; classify changes into coherent commits and push them together; configure release automation; or publish a semantic version such as v1.2.3.
 ---
 
 # Auto Release
@@ -51,7 +51,7 @@ $invoke = "$env:USERPROFILE\.codex\skills\auto-release\scripts\invoke-release.ps
 
 所有脚本都接收明确的 `-RepositoryRoot`。用户要求预览时传入 `-WhatIf`，不得产生配置、版本、构建产物、Git 或 GitHub 副作用。机器调用时传入 `-OutputFormat Json`，只依赖最后一行 JSON；失败结果包含 `stage`、`errorCode` 和 `message`。
 
-执行 `CommitPush` 或 `Release` 前，检查触发本次操作的用户提示词。用户显式指定提交语言时优先采用；否则中文提示传 `-PromptLanguage Chinese`，英文提示传 `-PromptLanguage English`，混合提示按主要指令语言判断，仍无法确定时传 `Auto` 以回退到仓库历史。只改变提交描述语言，不翻译仓库风格要求的 Conventional Commit 类型、scope、工单或 Gitmoji 前缀；`AutoSplit` 的全部组使用同一语言。
+执行 `CommitPush` 或 `Release` 前，检查触发本次操作的用户提示词。用户显式指定提交语言时优先采用；否则中文提示传 `-PromptLanguage Chinese`，英文提示传 `-PromptLanguage English`，混合提示按主要指令语言判断，仍无法确定时传 `Auto` 以回退到仓库历史。所有提交标题固定使用 Conventional Commits：`type(scope): 描述` 或 `type: 描述`；类型和 scope 保持英文，只根据提示词切换冒号后描述的语言。`AutoSplit` 的全部组使用同一语言。
 
 ## 不可绕过的保护
 

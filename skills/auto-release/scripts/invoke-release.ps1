@@ -138,7 +138,7 @@ function Write-Preview($Preview) {
   if ($null -ne $Preview.localBuildFresh) { Write-Host "Reusable local build: $($Preview.localBuildFresh)" }
   if ($Preview.branch) { Write-Host "Branch: $($Preview.remote)/$($Preview.branch)" }
   if ($Preview.commitStyle) {
-    Write-Host "Commit style: $($Preview.commitStyle.selectedStyle) ($($Preview.commitStyle.reason))"
+    Write-Host "Commit format: $($Preview.commitStyle.selectedStyle) ($($Preview.commitStyle.reason))"
   }
   if ($Preview.commitLanguage) {
     Write-Host "Commit language: $($Preview.commitLanguage.selectedLanguage) ($($Preview.commitLanguage.reason))"

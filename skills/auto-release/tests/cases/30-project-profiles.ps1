@@ -38,8 +38,8 @@ try {
   if ($LASTEXITCODE -ne 0) { throw "Node generation did not ignore the local config" }
   $nodeConfig = Get-Content -Raw -Encoding UTF8 $nodeConfigPath | ConvertFrom-Json
   Assert-Equal $nodeConfig.schemaVersion 2 "Node config does not use schema v2"
-  Assert-Equal $nodeConfig.commit.policy "auto" "Node config does not analyze recent commit style"
-  Assert-Equal $nodeConfig.commit.fallback "conventional" "Node config does not fall back to Conventional Commits"
+  Assert-Equal $nodeConfig.commit.policy "conventional" "Node config does not require Conventional Commits"
+  Assert-Equal $nodeConfig.commit.fallback "conventional" "Node config has the wrong compatibility fallback"
   Assert-Equal $nodeConfig.automation.template "node-v1" "Node config uses the wrong template"
   Assert-Equal $nodeConfig.prepare.localOutputDirectory "output" "Node config does not use the unified local output directory"
   Assert-Equal @($nodeConfig.prepare.bootstrapCommands).Count 1 "Node dependency installation was not separated from build commands"

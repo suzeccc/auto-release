@@ -212,7 +212,7 @@ function Assert-ReleaseConfig {
 
   $commitConfig = Get-OptionalProperty $script:Config "commit"
   if ($commitConfig) {
-    $commitPolicy = [string](Get-OptionalProperty $commitConfig "policy" "auto")
+    $commitPolicy = [string](Get-OptionalProperty $commitConfig "policy" "conventional")
     if ($commitPolicy -notin @("auto", "conventional", "off")) {
       throw "commit.policy must be auto, conventional, or off"
     }
@@ -391,7 +391,7 @@ function Invoke-Plan {
     "Current version: $currentVersion",
     "Target version: $normalizedVersion",
     "Tag: $($script:Tag)",
-    "Commit style: $($script:CommitStyleAnalysis.selectedStyle) ($($script:CommitStyleAnalysis.reason))",
+    "Commit format: $($script:CommitStyleAnalysis.selectedStyle) ($($script:CommitStyleAnalysis.reason))",
     "Commit language: $($script:CommitLanguageAnalysis.selectedLanguage) ($($script:CommitLanguageAnalysis.reason))",
     "Branch push: $($script:Config.remote)/$($script:Config.branch)",
     "Prepare parallel: $([bool](Get-OptionalProperty $script:Config.prepare 'parallel' $false))"

@@ -390,7 +390,7 @@ function New-GenerationBundle(
     remote = $defaults.Remote
     tagPrefix = "v"
     commit = [pscustomobject][ordered]@{
-      policy = "auto"
+      policy = "conventional"
       analyzeCount = 30
       minimumSamples = 3
       confidenceThreshold = 0.6

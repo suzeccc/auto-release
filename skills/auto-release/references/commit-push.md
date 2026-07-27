@@ -11,19 +11,19 @@ $style = "$env:USERPROFILE\.codex\skills\auto-release\scripts\commit-style.ps1"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File $style -RepositoryRoot "<仓库根目录>"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File $invoke `
   -Operation CommitPush -PromptLanguage Chinese `
-  -Summary "一句符合分析结果的中文总结" `
+  -Summary "fix(auth): 修复登录失败问题" `
   -RepositoryRoot "<仓库根目录>"
 ```
 
-先用 `-WhatIf -OutputFormat Json` 预览；结果在 `commitStyle` 返回风格、置信度和回退原因。
+先用 `-WhatIf -OutputFormat Json` 预览；结果在兼容字段 `commitStyle` 中返回固定格式及策略归一化原因。
 
-## 提交风格
+## 提交格式
 
-- 分析最近 30 条非合并提交。
-- 至少 3 条样本且某种风格占比达到 60% 时沿用该风格。
-- 支持 Conventional、纯文本、`[type]`、工单前缀和 Gitmoji。
-- 样本不足、并列或置信度不足时回退到 Conventional Commits。
-- `commit.policy` 可固定为 `conventional` 或设为 `off`；无论策略如何，`Summary` 都必须是单行并通过风格和语言分析器校验。
+- 所有 `CommitPush`、`AutoSplit` 和 `Release` 标题都必须使用 Conventional Commits。
+- 允许 `type: 描述`、`type(scope): 描述`，以及破坏性变更形式 `type(scope)!: 描述`。
+- 类型使用小写英文；常用值包括 `feat`、`fix`、`docs`、`refactor`、`test`、`build`、`ci`、`perf` 和 `chore`。scope 可省略。
+- 不接受纯文本、`[type]`、工单前缀或 Gitmoji 作为标题前缀。
+- 新配置固定使用 `commit.policy: conventional`。旧配置中的 `auto` 和 `off` 仅为兼容而可读取，运行时都会归一化为 `conventional`，不能关闭校验。
 
 ## 提示词语言
 
@@ -57,4 +57,4 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File $invoke `
 
 ## 完成标准
 
-报告选定风格、提交数量、每个提交 SHA/主题、分支和 push 结果。不要在 `CommitPush` 后自动创建标签或 Release。
+报告 Conventional Commits 格式、提交数量、每个提交 SHA/主题、分支和 push 结果。不要在 `CommitPush` 后自动创建标签或 Release。

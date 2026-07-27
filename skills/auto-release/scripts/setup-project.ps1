@@ -357,7 +357,7 @@ function Invoke-Validate {
 
   $commit = Get-OptionalProperty $config "commit"
   if ($commit) {
-    $commitPolicy = [string](Get-OptionalProperty $commit "policy" "auto")
+    $commitPolicy = [string](Get-OptionalProperty $commit "policy" "conventional")
     if ($commitPolicy -notin @("auto", "conventional", "off")) { throw "Unsupported commit.policy: $commitPolicy" }
     $analyzeCount = [int](Get-OptionalProperty $commit "analyzeCount" 30)
     $minimumSamples = [int](Get-OptionalProperty $commit "minimumSamples" 3)

@@ -166,7 +166,7 @@ jobs: {}
   }
 
   Remove-Item -LiteralPath (Join-Path $operationsRoot "dist\local-app.exe") -Force
-  & $script -Mode Prepare -Version v1.1.0 -Summary "Skip local build test" -RepositoryRoot $operationsRoot -SkipBuild
+  & $script -Mode Prepare -Version v1.1.0 -Summary "chore(release): skip local build test" -RepositoryRoot $operationsRoot -SkipBuild
   if (Test-Path -LiteralPath (Join-Path $operationsRoot "dist\local-app.exe")) { throw "Prepare SkipBuild still ran build commands" }
   $preparedPackage = Get-Content -Raw -Encoding UTF8 (Join-Path $operationsRoot "package.json") | ConvertFrom-Json
   Assert-Equal $preparedPackage.version "1.1.0" "Prepare SkipBuild did not update the release version"

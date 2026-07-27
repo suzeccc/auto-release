@@ -5,7 +5,7 @@
 ## 前置输入
 
 - 稳定语义版本 `vX.Y.Z`。
-- 符合仓库提交风格且描述语言与触发提示词一致的单行 `Summary`。
+- 符合 Conventional Commits 且描述语言与触发提示词一致的单行 `Summary`。
 - 以配置标题开头、数量符合限制的中文 `ReleaseNotes`。
 - 干净且可解释的发布配置、标签触发工作流和远端状态。
 
@@ -31,7 +31,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File $invoke `
 
 - 校验仓库根目录、配置分支、配置远端和可选 `remoteUrlPattern`。
 - 读取当前版本、状态、最近稳定标签后的提交和当前差异。
-- 分析提交风格并验证 `Summary`。
+- 强制验证 `Summary` 为 Conventional Commits 格式，不根据仓库历史切换格式。
 - 根据 `PromptLanguage` 验证提交描述语言；判定优先级和混合提示规则与 [CommitPush 参考](commit-push.md) 一致。
 - 只输出版本、构建、产物、工作流、Release 和原子 push 计划；不暂存或修改文件。
 
