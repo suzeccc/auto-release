@@ -2,152 +2,77 @@
 
 [![License: MIT](https://img.shields.io/github/license/suzeccc/auto-release?style=flat-square)](LICENSE)
 
-让 Codex 帮你完成 **README 优化、本地打包、提交推送和 GitHub 正式发布**。
+面向 Codex 的项目发布 Skill：从 README 优化、本地构建、Git 忽略审计，到分类提交和 GitHub Release，把常见仓库操作收敛成一套有明确边界的工作流。
 
-你只需要说明想做什么，Auto Release 会识别项目类型、选择正确的构建方式，并在需要时创建 GitHub Actions 发布工作流。
+它支持 12 类应用、库、桌面、移动、原生和容器项目。你只需告诉 Codex 想完成什么；Auto Release 会先识别当前仓库，再选择对应的配置、构建和发布策略。
 
-## 它能做什么
+## 快速开始
 
-| 你想做的事 | Auto Release 会做什么 | 不会做什么 |
-|---|---|---|
-| 优化 README | 识别项目类型和主要读者，重构内容层级并验证链接、命令与徽章 | 不套用固定比例、不虚构项目状态 |
-| 本地测试打包 | 构建当前项目，把结果放到 `output/` | 不改版本、不提交、不推送 |
-| 检查忽略规则 | 深度检查并补全 `.gitignore`，可停止跟踪本地产物 | 不删除本地文件、不重写历史 |
-| 提交并推送 | 检查改动和敏感文件，生成提交信息，推送当前分支 | 不自动合并、不变基、不强推 |
-| 正式发布 | 更新版本、测试、构建、提交、打标签、运行 GitHub Actions、发布 GitHub Release | 发布失败时不会公开不完整的 Release |
-
-如果你的表达不够明确，Codex 会让你从 `README`、`LocalBuild`、`Ignore`、`CommitPush`、`Release` 五种操作中选择，不会把“本地打包”误认为正式发布。
-
-## 支持哪些项目
-
-Auto Release 当前支持 12 类常见项目：
-
-| 类型 | 典型发布结果 |
-|---|---|
-| Tauri | Windows 安装包、macOS DMG、Linux 包 |
-| Node.js | npm `.tgz` 包 |
-| Go | Windows、Linux、macOS 的 amd64/arm64 程序 |
-| Python | wheel 和 sdist |
-| Rust | `.crate` 包 |
-| .NET | `.nupkg` 包 |
-| Java | Maven 或 Gradle 生成的 `.jar` |
-| CMake | Windows、Linux、macOS 的多架构压缩包 |
-| Flutter | 移动端、桌面端和 Web 构建 |
-| Android | APK 和 AAB |
-| Electron | Windows、Linux、macOS 的多架构压缩包 |
-| Docker | 推送到 GHCR 的多架构镜像 |
-
-实际生成多少个安装包或产物，取决于项目类型和它对应的平台矩阵。
-
-## 安装
+### 1. 安装
 
 在 PowerShell 中运行：
 
 ```powershell
-python -X utf8 "$env:USERPROFILE\.codex\skills\.system\skill-installer\scripts\install-skill-from-github.py" --repo suzeccc/auto-release --path skills/auto-release
+python -X utf8 "$env:USERPROFILE\.codex\skills\.system\skill-installer\scripts\install-skill-from-github.py" `
+  --repo suzeccc/auto-release `
+  --path skills/auto-release
 ```
 
-安装完成后，重新打开一个 Codex 任务，让 Skill 列表刷新。
+安装完成后，新建一个 Codex 任务，让 Skill 列表刷新。
 
-## 最快使用方式
-
-进入任意本地 Git 项目，直接告诉 Codex：
-
-### 想优化项目说明
+### 2. 直接告诉 Codex 目标
 
 ```text
-重构 README，按项目类型和主要读者安排内容，该加徽章的加徽章
-```
-
-### 只想在本地试一下
-
-```text
-本地打包这个项目，不要改版本，也不要提交
-```
-
-### 想提交当前改动
-
-```text
-检查这些修改，生成合适的提交信息，然后提交并推送
-```
-
-### 想检查不该上传的文件
-
-```text
-忽略
-```
-
-只输入“忽略”时，Auto Release 先执行只读审计并展示计划，不会直接修改 `.gitignore`。
-
-### 想创建自动发布工作流
-
-```text
-给这个项目创建 GitHub Release 工作流
-```
-
-### 想正式发布新版本
-
-```text
+优化这个项目的 README
+本地打包，不要改版本，也不要提交
+检查 Git 忽略规则
+检查当前修改，分类提交后统一推送
 正式发布 v1.2.3
 ```
 
-首次使用时，Auto Release 会先识别项目并生成项目专用配置。以后会复用这份配置，不会每次重新猜测。
+如果目标不明确，Codex 会让你从 `README`、`LocalBuild`、`Ignore`、`CommitPush`、`Release` 中选择。只说“忽略”时默认执行只读审计，不会直接修改 `.gitignore`。
 
-## 五种操作
+## 五种工作流
 
-### 1. README：创建或优化项目自述
+| 操作 | 适合做什么 | 默认会改什么 |
+|---|---|---|
+| `README` | 创建、重构或审计项目自述文件 | 只修改文档，不暂存、不提交、不推送 |
+| `LocalBuild` | 在本机验证项目能否构建 | 可生成本地构建配置和 `output/` 产物；不改版本和 Git |
+| `Ignore` | 检查缺失规则、敏感路径和已跟踪生成文件 | 默认只生成审计计划；应用规则需要确认 |
+| `CommitPush` | 提交当前安全改动并推送当前分支 | 创建一个或多个 Git 提交，然后执行一次推送 |
+| `Release` | 发布稳定语义版本 | 可更新版本、构建、提交、推送标签并操作 GitHub Release |
 
-适合新建仓库说明、重构过时 README，或在公开项目前完成内容审计。
+### README
 
-- 识别应用、库、SDK、CLI、框架、基础设施或内部项目。
-- 明确产品使用者、集成开发者、部署运维者、贡献者和维护者的优先级。
-- 按主要读者的最短成功路径动态安排内容，不使用固定的用户/开发比例。
-- 检查功能、状态、命令、图片、相对链接和文档入口是否真实有效。
-- 根据项目类型选择 Shields.io 徽章；动态状态必须连接真实数据源。
-- 详细 API、索引、联调和故障排查下沉到 `docs/`。
-- 只修改文档，不自动暂存、提交或推送。
+Auto Release 先识别项目类型、主要读者及其首要任务，再决定 README 的内容顺序。它会核对仓库中的功能、命令、链接、图片、许可证和状态，只在存在可靠数据源时添加徽章。
 
-### 2. LocalBuild：本地测试打包
+详细 API、内部实现和长篇故障排查会保留在 `docs/` 或引用文档中，避免让 README 变成资料堆积页。
 
-适合开发过程中快速验证程序是否能正常构建。
+### LocalBuild
 
-- 不修改项目版本。
-- 不创建 Git 提交。
-- 不推送代码或标签。
-- 产物统一放到 `output/<项目名><扩展名>`。
-- 文件名不包含版本号，方便反复覆盖和测试。
-- 源码与产物未变化时，会复用上次有效结果。
+本地构建不会修改版本、创建提交或访问 GitHub。构建产物统一复制到：
 
-需要忽略缓存重新构建时，告诉 Codex“强制重新打包”。
+```text
+output/<项目名><扩展名>
+```
 
-### 3. Ignore：检查并补全忽略规则
+源码指纹和产物 SHA256 都未变化时，可以复用上次结果；明确要求“强制重新打包”时会忽略缓存。
 
-适合提交项目或公开 GitHub 仓库前检查本地文件、构建产物和缓存。
+### Ignore
 
-- 识别项目类型和对应工具链产物。
-- 检查现有 `.gitignore`、Git 本地排除规则和当前文件状态。
-- 区分安全补全、需要确认、敏感文件和必须保留文件。
-- 默认只生成计划，不修改工作区。
-- 可以只补全规则，也可以停止跟踪已经上传的生成文件。
-- 停止跟踪时保留本地文件并验证 SHA256。
-- 不删除文件、不提交、不推送、不重写历史。
+Ignore 会检查根目录和嵌套 `.gitignore`、当前 Git 状态、工具链缓存、构建输出、Agent/IDE 本地状态、测试报告和需要人工判断的路径。对于 Codex Skill 源码仓库，它会识别有效 `SKILL.md`，保护整个 Skill 根目录，并单独处理 `.install-test/` 本地安装验证沙箱。
 
-`.gitignore` 对已经跟踪的文件无效；这类文件必须明确选择“补全并停止跟踪”。任何应用操作失败都会恢复 `.gitignore` 和原暂存区。
+- `Audit`：只生成计划。
+- `Apply`：补全已确认的规则。
+- `ApplyAndUntrack`：补全规则，并停止跟踪计划中确认的文件；本地文件仍然保留。
 
-### 4. CommitPush：提交并推送
+Ignore 不负责提交或推送，也不会自动重写 Git 历史。计划细节见 [Ignore 审计与应用](skills/auto-release/references/ignore.md)。
 
-适合完成一轮修改后，把全部安全改动提交到当前分支。
+### CommitPush
 
-- 同时处理已暂存、未暂存、删除和未跟踪文件。
-- 遵守 `.gitignore`。
-- 发现 `.env`、私钥、凭据或常见 Token 时停止。
-- 自动分析最近提交风格。
-- 风格无法确定时回退到 Conventional Commits。
-- 能把不同目的的改动分类成 2 至 4 个独立提交，再一次性推送。
-- 分类或任一提交失败时恢复原分支和原有改动，不推送半成品。
-- 远程分支领先或发生分叉时停止，不擅自处理历史。
+CommitPush 会同时检查已暂存、未暂存、删除和未跟踪文件，并执行内置的疑似凭据检查。它会分析仓库最近的提交风格；无法可靠确定时，回退到 Conventional Commits。
 
-Auto Release 使用 Conventional Commits 时，类型和可选范围使用英文，说明使用中文，例如：
+当改动包含多个独立目的时，`AutoSplit` 可以按计划创建 2～4 个事务化提交。所有分组成功后才更新原分支并统一推送；无法可靠分类时退回单提交。
 
 ```text
 feat: 新增自动发布工作流
@@ -155,160 +80,174 @@ fix(release): 修复标签发布失败
 docs: 更新安装说明
 ```
 
-例如同时修改 `.gitignore` 和前端性能代码时，可以自动形成：
+### Release
 
-```text
-chore(repo): 停止跟踪本地预览与开发产物
-perf(frontend): 优化按需加载与运行时开销
-```
+Release 按 `Plan → Prepare → Commit → Publish` 执行：
 
-两个提交都在临时事务分支成功创建并通过检查后，Auto Release 才会把它们一起推送。无法可靠分类时自动退回一个提交，不会为了增加提交数量强行拆分。
+1. 校验仓库、分支、远程、版本和发布说明。
+2. 更新版本文件并运行项目测试与构建。
+3. 检查本地构建结果和待提交内容。
+4. 提交版本变更，创建并原子推送标签。
+5. 等待配置的 GitHub Actions。
+6. 按配置检查所需发布资产，并创建或公开 GitHub Release。
 
-### 5. Release：正式发布
+生成的发布工作流使用草稿 Release；如果项目使用自定义 `.codex-release.json` 或人工工作流，应在正式发布前审查对应的发布模式和资产规则。
 
-适合发布稳定版本，例如 `v1.2.3`。
+## 支持的项目
 
-Auto Release 会按顺序执行：
+| 项目类型 | 自动识别依据 | 典型正式产物 |
+|---|---|---|
+| Tauri | `src-tauri/tauri.conf.json` | Windows 安装包、macOS DMG、Linux 包 |
+| Node.js | `package.json` | npm `.tgz` |
+| Go | `go.mod` | Windows、Linux、macOS amd64/arm64 程序 |
+| Python | `pyproject.toml`、`setup.py` 或 `setup.cfg` | wheel、sdist |
+| Rust | `Cargo.toml` | `.crate` |
+| .NET | `.csproj` | `.nupkg` |
+| Java | `pom.xml` 或 Gradle 构建文件 | `.jar` |
+| CMake | `CMakeLists.txt` | Windows、Linux、macOS 多架构压缩包 |
+| Flutter | `pubspec.yaml` | 移动端、桌面端和 Web 构建 |
+| Android | Android Gradle 项目 | APK、AAB |
+| Electron | Electron `package.json` | Windows、Linux、macOS 多架构压缩包 |
+| Docker | `Dockerfile` | GHCR 多架构镜像和摘要清单 |
 
-1. 检查项目、分支、远程仓库和目标版本。
-2. 更新项目中的版本文件。
-3. 运行测试和本地构建。
-4. 检查构建产物与敏感文件。
-5. 提交版本变更。
-6. 创建并原子推送 Git 标签。
-7. 等待 GitHub Actions 构建各平台正式包。
-8. 校验产物完整性。
-9. 公开已经验证的 GitHub Release。
+专用应用类型优先识别。多个普通项目清单并存时，Auto Release 会停止并要求显式选择 `-ProjectType`，不会依赖不透明的猜测顺序。
 
-任何关键步骤失败都会停止；不会强推、覆盖旧标签或公开不完整的 Release。
+## 首次使用与项目文件
 
-## 首次使用会生成什么
+Auto Release 会按操作逐步准备配置：
 
-完整发布模式通常会在你的项目中生成两个文件：
+- 只做本地构建时，生成本地构建所需的 `.codex-release.json`，不创建 GitHub 工作流。
+- 需要正式发布时，补全发布配置并创建标签触发的工作流。
+
+完整发布配置通常包含：
 
 ```text
 .codex-release.json
 .github/workflows/release.yml
 ```
 
-- `.codex-release.json`：记录这个项目如何读取版本、测试、构建和发布。
-- `release.yml`：标签触发的 GitHub Actions 正式发布工作流。
+这两个文件属于项目，应与代码一起评审和提交。运行收据、Ignore 计划和分类提交计划存放在 `.git/auto-release/`，不会成为仓库内容。
 
-这两个文件属于你的项目，建议与代码一起提交。
+## 现有工作流保护
 
-如果只执行本地打包，Auto Release 只生成本地构建配置，不会创建 GitHub 工作流。
+如果目标发布工作流已经存在但没有 Auto Release 托管标记，生成器默认停止，不会直接覆盖。你可以明确选择：
 
-## 不会覆盖你的工作流
+- `ReuseCompatible`：复用已经满足标签触发、权限和草稿 Release 要求的人工工作流。
+- `CreateSeparate`：保留原工作流，创建 `.github/workflows/auto-release.yml`。
+- `Stop`：保持仓库不变，由你先处理冲突。
 
-如果 `.github/workflows/release.yml` 已经由你维护，Auto Release 默认停止，不会直接覆盖。
+只有 Auto Release 自己生成并带有托管标记的文件，后续才允许自动更新。
 
-你可以选择：
+## PowerShell 入口
 
-- **兼容复用**：现有工作流已经具备标签触发、发布权限和草稿 Release 能力时直接使用。
-- **另建工作流**：保留原文件，创建 `.github/workflows/auto-release.yml`。
-- **停止操作**：什么都不改，由你决定后续方案。
-
-由 Auto Release 自己生成并带有托管标记的工作流，才允许后续自动更新。
-
-## 常见问题
-
-### 适用于所有项目吗？
-
-不是“任何项目都无需配置”。它能自动处理上表中的 12 类常见项目。复杂单体仓库、多种项目清单并存或自定义构建系统，可能需要明确指定项目类型或调整 `.codex-release.json`。
-
-### 会自动创建 GitHub Actions 吗？
-
-会。选择正式发布或要求创建发布工作流时会生成；只做本地打包时不会生成。
-
-### 一次能发布多少个安装包？
-
-数量由项目类型决定。例如 Tauri 会生成五类桌面目标，Go 会生成六个系统/架构目标；Node.js 通常生成一个 `.tgz`。其他类型按照各自平台矩阵生成。
-
-### 会改我的版本号吗？
-
-`LocalBuild` 不会。只有正式 `Release` 才会更新版本。
-
-### 会覆盖已有标签或强制推送吗？
-
-不会。已有本地或远程标签、远程分叉、构建失败都会让发布停止。
-
-### 提交信息必须是英文吗？
-
-不需要全部使用英文。Auto Release 优先沿用仓库最近的提交格式；使用 Conventional Commits 时采用英文类型加中文说明，例如 `feat: 新增导出功能`。
-
-## 高级用法
+日常使用直接告诉 Codex 目标即可。需要调试、集成或脚本化时，可以调用底层入口。
 
 <details>
-<summary>查看 PowerShell 命令</summary>
+<summary>项目识别与初始化</summary>
 
 ```powershell
 $setup = "$env:USERPROFILE\.codex\skills\auto-release\scripts\setup-project.ps1"
-$invoke = "$env:USERPROFILE\.codex\skills\auto-release\scripts\invoke-release.ps1"
 
-# 识别项目，只读
+# 只读识别
 & $setup -Mode Detect -RepositoryRoot "<仓库根目录>"
 
 # 只生成本地构建配置
 & $setup -Mode GenerateLocal -RepositoryRoot "<仓库根目录>"
 
-# 生成完整配置与 GitHub Actions
+# 生成完整配置和发布工作流
 & $setup -Mode Generate -RepositoryRoot "<仓库根目录>"
 
-# 校验现有配置和工作流
+# 校验现有配置
 & $setup -Mode Validate -RepositoryRoot "<仓库根目录>"
-
-# 本地测试打包
-& $invoke -Operation LocalBuild -RepositoryRoot "<仓库根目录>"
-
-# 强制重新打包
-& $invoke -Operation LocalBuild -ForceRebuild -RepositoryRoot "<仓库根目录>"
-
-# 只读审计 Git ignore
-& $invoke -Operation Ignore -IgnoreMode Audit -RepositoryRoot "<仓库根目录>"
-
-# 补全规则并停止跟踪生成文件，但保留本地文件
-& $invoke -Operation Ignore -IgnoreMode ApplyAndUntrack -RepositoryRoot "<仓库根目录>"
-
-# 提交并推送
-& $invoke -Operation CommitPush -Summary "chore: 更新项目" -RepositoryRoot "<仓库根目录>"
-
-# 按 Codex 生成的计划创建多个提交并统一推送
-& $invoke -Operation CommitPush -CommitStrategy AutoSplit `
-  -CommitPlanPath "<仓库根目录>/.git/auto-release/commit-plan.json" `
-  -RepositoryRoot "<仓库根目录>"
-
-# 正式发布
-& $invoke -Operation Release -Version v1.2.3 -Summary "chore(release): 发布 v1.2.3" `
-  -ReleaseNotes "<中文 Release Notes>" -RepositoryRoot "<仓库根目录>"
 ```
-
-常用选项：
-
-- `-WhatIf`：只预览，不修改文件、Git 或 GitHub。
-- `-OutputFormat Json`：输出适合脚本处理的 JSON。
-- `-CommitStrategy AutoSplit`：按计划创建多个事务化提交并统一推送。
-- `-IgnoreMode Audit|Apply|ApplyAndUntrack`：检查、应用或应用并停止跟踪。
-- `-ProjectType`：多种项目清单并存时明确指定类型。
-- `-WorkflowPolicy ReuseCompatible`：复用兼容的人工工作流。
-- `-WorkflowPolicy CreateSeparate`：保留人工工作流并新建发布工作流。
 
 </details>
 
-完整配置字段见 [`skills/auto-release/references/config.md`](skills/auto-release/references/config.md)。
+<details>
+<summary>构建、Ignore、提交与发布</summary>
+
+```powershell
+$invoke = "$env:USERPROFILE\.codex\skills\auto-release\scripts\invoke-release.ps1"
+
+# 本地构建
+& $invoke -Operation LocalBuild -RepositoryRoot "<仓库根目录>"
+& $invoke -Operation LocalBuild -ForceRebuild -RepositoryRoot "<仓库根目录>"
+
+# Ignore 审计
+& $invoke -Operation Ignore -IgnoreMode Audit -RepositoryRoot "<仓库根目录>"
+
+# 应用已确认计划并停止跟踪生成文件
+& $invoke -Operation Ignore -IgnoreMode ApplyAndUntrack -RepositoryRoot "<仓库根目录>"
+
+# 单提交并推送
+& $invoke -Operation CommitPush `
+  -PromptLanguage Chinese `
+  -Summary "docs: 更新项目说明" `
+  -RepositoryRoot "<仓库根目录>"
+
+# 按 Codex 生成的计划分类提交并统一推送
+& $invoke -Operation CommitPush `
+  -CommitStrategy AutoSplit `
+  -PromptLanguage Chinese `
+  -CommitPlanPath "<仓库根目录>/.git/auto-release/commit-plan.json" `
+  -RepositoryRoot "<仓库根目录>"
+
+$notes = @"
+## 更新内容
+
+- 新增：第一项用户可感知变化。
+- 修复：第二项用户可感知变化。
+"@
+
+# 正式发布
+& $invoke -Operation Release `
+  -Version v1.2.3 `
+  -PromptLanguage Chinese `
+  -Summary "chore(release): 发布 v1.2.3" `
+  -ReleaseNotes $notes `
+  -RepositoryRoot "<仓库根目录>"
+```
+
+</details>
+
+提交语言跟随触发操作的用户提示词：中文提示使用 `-PromptLanguage Chinese`，英文提示使用 `English`；用户明确指定语言时优先，混合提示无法可靠判断时使用 `Auto` 分析仓库历史。Conventional Commit 的类型和 scope 保持仓库规范，只切换描述语言；分类提交中的全部提交使用同一种语言。
+
+常用选项：
+
+- `-WhatIf`：预览统一入口操作，不修改文件、Git 或 GitHub。
+- `-OutputFormat Json`：输出适合自动化读取的单行 JSON 结果。
+- `-ProjectType`：多种项目清单并存时显式选择类型。
+- `-WorkflowPolicy ReuseCompatible|CreateSeparate`：决定如何处理人工发布工作流。
+
+完整字段和计划格式见 [`.codex-release.json` 配置参考](skills/auto-release/references/config.md)。
+
+## 安全边界
+
+- 不强制推送，不移动或覆盖已有版本标签。
+- 远程分支领先或分叉时停止，不自动合并或变基。
+- `Ignore` 默认只读；应用和停止跟踪需要明确确认。
+- `CommitPush` 和 `Release` 会执行启发式敏感文件检查，但不能替代人工审查和专用密钥扫描工具。
+- `Release` 会修改版本、Git 和 GitHub；正式执行前可先使用 `-WhatIf` 查看计划。
+- 人工维护的工作流默认保持不变。
 
 ## 环境要求
 
+- Codex
 - Windows PowerShell 5.1 或 PowerShell 7+
 - Git
 - Python（安装 Skill 或发布 Python 项目时需要）
-- 项目自身需要的构建工具，例如 Node.js、Go、Rust、.NET SDK、JDK、Flutter 或 Docker
-- GitHub CLI `gh`（正式发布到 GitHub 时需要）
+- 目标项目自己的构建工具，例如 Node.js、Go、Rust、.NET SDK、JDK、Flutter 或 Docker
+- GitHub CLI `gh`（访问 GitHub Actions 或 GitHub Release 时需要）
 
 ## 开发与验证
+
+仓库的契约测试会检查 Skill 结构、12 类项目配置、工作流模板和主要操作路径：
 
 ```powershell
 & ".\skills\auto-release\tests\validate.ps1"
 ```
+
+维护 README 时可参考 [README 优化参考](skills/auto-release/references/readme.md)。
 
 ## License
 
