@@ -1,6 +1,16 @@
 # `.codex-release.json` 配置参考
 
-配置位于 Git 仓库根目录。所有相对路径都以仓库根目录为基准，所有正则表达式使用 .NET 语法。
+配置位于 Git 仓库根目录，但属于可再生的本机 Skill 配置，不是公共项目清单。生成器会把其精确根路径加入 `.gitignore`；提交器读取它但不提交其内容。所有相对路径都以仓库根目录为基准，所有正则表达式使用 .NET 语法。
+
+## 目录
+
+- [自动生成](#自动生成)
+- [用户操作入口](#用户操作入口)
+- [完整结构](#完整结构)
+- [字段规则](#字段规则)
+- [自动生成的项目策略](#自动生成的项目策略)
+- [托管工作流保护](#托管工作流保护)
+- [最小无工作流示例](#最小无工作流示例)
 
 ## 自动生成
 
@@ -15,8 +25,8 @@ $setup = "$env:USERPROFILE\.codex\skills\auto-release\scripts\setup-project.ps1"
 ```
 
 - `Detect`：只读识别支持的项目类型，并报告版本源、包管理器和构建入口。
-- `GenerateLocal`：只生成本地构建配置，不检查、不创建也不覆盖 GitHub 工作流；正式发布时可升级为完整配置。
-- `Generate`：生成 schema v2 配置和标签触发的 GitHub Actions 工作流。
+- `GenerateLocal`：生成被忽略的本地构建配置，不检查、不创建也不覆盖 GitHub 工作流；正式发布时可升级为完整配置。
+- `Generate`：生成被忽略的 schema v2 本机配置和需要提交的标签触发 GitHub Actions 工作流。
 - `Validate`：检查配置、版本源、工作流标记、标签触发器、权限、草稿 Release 和产物规则。
 
 `-ProjectType` 支持 `auto`、`tauri`、`node`、`go`、`python`、`rust`、`dotnet`、`java`、`cmake`、`flutter`、`android`、`electron` 和 `docker`。专用应用类型优先识别；其他项目存在多个生态清单时必须显式指定类型。
@@ -48,25 +58,25 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\invoke-release
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\invoke-release.ps1 -Operation Ignore -IgnoreMode Audit
 
 # 提交更改区和暂存区的全部安全更改，并推送当前分支
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\invoke-release.ps1 -Operation CommitPush -Summary "一句中文总结"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\invoke-release.ps1 -Operation CommitPush -PromptLanguage Chinese -Summary "一句中文总结"
 
 # 按计划创建多个提交，全部成功后统一推送
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\invoke-release.ps1 `
-  -Operation CommitPush -CommitStrategy AutoSplit `
+  -Operation CommitPush -CommitStrategy AutoSplit -PromptLanguage Chinese `
   -CommitPlanPath ".git/auto-release/commit-plan.json"
 
 # 更新版本、提交推送、构建全部包并发布 GitHub
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\invoke-release.ps1 -Operation Release -Version v1.2.3 `
-  -Summary "一句中文总结" -ReleaseNotes "<中文 Release Notes>"
+  -PromptLanguage Chinese -Summary "一句中文总结" -ReleaseNotes "<中文 Release Notes>"
 ```
 
 `LocalBuild` 调用 `prepare.localCommands`，未声明时兼容回退到 `prepare.commands`；它不运行 `version.updates`，也不验证 GitHub 工作流的标签触发器、发布权限或草稿 Release。`prepare.bootstrapCommands` 根据 `prepare.bootstrapInputs` 的哈希缓存，输入未变化时不重复安装依赖。构建产物统一复制到 `prepare.localOutputDirectory`，默认是 `output`；目标文件使用 `<projectName><扩展名>`，不含版本号，目录或文件不存在时自动创建。
 
-`Ignore` 不依赖 `.codex-release.json`。`Audit`、`Apply`、`ApplyAndUntrack` 的计划结构、安全边界和回滚规则见 [`ignore.md`](ignore.md)。
+`Ignore` 不依赖 `.codex-release.json`。审计会把该文件固定识别为本机配置；旧仓库已经跟踪它时，使用 `ApplyAndUntrack` 保留本地副本并精确停止跟踪。`Audit`、`Apply`、`ApplyAndUntrack` 的计划结构、安全边界和回滚规则见 [`ignore.md`](ignore.md)。
 
 执行器只按完整路径终止配置产物和上次收据记录的 EXE，不扫描或终止输出目录中的无关程序。`prepare.localArtifacts` 控制本地快速构建产物，`prepare.artifacts` 控制正式构建产物；`prepare.localSearchRoots` 为无法提前确定完整文件名的本地产物提供受限搜索根目录。`localName` 可覆盖统一输出文件名。`prepare.localOutputDirectory` 必须是无版本、无标签占位符的稳定路径。草稿式 GitHub Release 的正式操作只把本地验证产物写入该规范目录，不采用 `artifacts[].destination` 中的版本路径；GitHub Actions 负责正式发布包。成功后在 `.git/auto-release/local-build.json` 保存忽略发布版本值的源文件指纹、底层执行器返回的精确产物清单和 SHA256，并删除上次由 Skill 管理、这次不再生成的旧输出。默认复用有效收据；`-ForceRebuild` 强制重新构建。正式发布提交前再次校验源码指纹，避免构建后变化的文件进入发布提交。
 
-`CommitPush` 和 `Release` 明确执行全量暂存，包含已暂存、未暂存、删除和未跟踪文件，并遵守 `.gitignore`。提交前拒绝 Git 冲突、明显凭据文件、私钥和常见 Token；失败时恢复原暂存区。
+`CommitPush` 和 `Release` 明确执行全量暂存，包含已暂存、未暂存、删除和未跟踪文件，并遵守 `.gitignore`。`.codex-release.json` 必须已被忽略且不再被 Git 跟踪；迁移提交只记录其索引删除，本地文件保持不变。提交前拒绝 Git 冲突、明显凭据文件、私钥和常见 Token；失败时恢复原暂存区。
 
 `CommitPush` 默认使用兼容的 `Single` 策略。需要把一轮改动拆成多个语义提交时，Codex 先把计划写入 Git 元数据目录，再传入 `-CommitStrategy AutoSplit -CommitPlanPath <path>`。计划不会进入仓库，必须精确列出全部改动路径，不接受通配符，同一文件不能重复出现。默认最多 4 组，可用 `-MaxCommits` 在 2 至 8 之间调整。
 
@@ -87,7 +97,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\invoke-release
 }
 ```
 
-每个 `summary` 都必须符合检测到的仓库风格并包含中文。建议保持 2 至 4 组：实现和对应测试同组、清单和锁文件同组、源文件和生成文件同组；小组、低置信度组和相互依赖组应合并。执行器先验证计划和全部敏感文件，再在临时事务分支逐组运行暂存检查并提交。任一步失败时恢复原分支、原暂存区和全部工作区改动；全部成功后快进原分支并只推送一次。`-WhatIf -OutputFormat Json` 会在 `commitPlan` 返回规范化计划。
+每个 `summary` 都必须符合检测到的仓库风格，并让描述部分匹配统一的 `PromptLanguage`。Conventional Commit 类型和 scope 不参与语言判断。建议保持 2 至 4 组：实现和对应测试同组、清单和锁文件同组、源文件和生成文件同组；小组、低置信度组和相互依赖组应合并。执行器先验证计划和全部敏感文件，再在临时事务分支逐组运行暂存检查并提交。任一步失败时恢复原分支、原暂存区和全部工作区改动；全部成功后快进原分支并只推送一次。`-WhatIf -OutputFormat Json` 会在 `commitPlan` 返回规范化计划，并在 `commitLanguage` 返回语言来源和回退原因。
 
 提交前可独立查看风格分析结果：
 
@@ -95,7 +105,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\invoke-release
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\commit-style.ps1 -RepositoryRoot .
 ```
 
-默认读取最近 30 条非合并提交。样本至少为 3 且最高占比达到 60% 时沿用检测到的 Conventional、纯文本、`[type]`、工单前缀或 Gitmoji 风格；样本不足、并列或置信度不足时回退到 Conventional Commits。统一入口会再次校验 `Summary`，预演 JSON 在 `commitStyle` 中返回选择结果。
+默认读取最近 30 条非合并提交。样本至少为 3 且最高占比达到 60% 时沿用检测到的 Conventional、纯文本、`[type]`、工单前缀或 Gitmoji 风格；样本不足、并列或置信度不足时回退到 Conventional Commits。`PromptLanguage` 接受 `Chinese`、`English` 或 `Auto`；前两项来自当前用户提示词，`Auto` 才分析历史提交描述并在无法确定时回退到英文。统一入口会再次校验 `Summary`，预演 JSON 分别在 `commitStyle` 和 `commitLanguage` 中返回选择结果。
 
 生成的工作流首部包含以下托管标记：
 
@@ -121,6 +131,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\commit-style.p
   "projectName": "ExampleApp",
   "branch": "main",
   "remote": "origin",
+  "githubRepository": "owner/repository",
   "remoteUrlPattern": "github\\.com[:/]owner/repository(?:\\.git)?$",
   "tagPrefix": "v",
   "commit": {
@@ -205,9 +216,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\commit-style.p
 - `automation.managedWorkflow`：为 `true` 时，`Validate` 强制校验托管标记和模板一致性。
 - `automation.workflowFile`：托管工作流的仓库相对路径。
 - `projectName`、`branch`、`remote`：必填。
+- `githubRepository`：可选；使用 `OWNER/REPO` 或 GitHub Enterprise 的 `HOST/OWNER/REPO`。未设置时从配置远端 URL 推导；无法可靠推导时正式发布停止。所有 `gh run`、`gh release` 命令都显式绑定该仓库。
 - `remoteUrlPattern`：可选；设置后必须匹配 `git remote get-url <remote>`。
 - `tagPrefix`：可选，默认 `v`。
-- `commit.policy`：`auto` 自动沿用可靠的最近风格；`conventional` 始终要求 Conventional Commits；`off` 仅保留单行中文校验。
+- `commit.policy`：`auto` 自动沿用可靠的最近风格；`conventional` 始终要求 Conventional Commits；`off` 关闭风格约束，但仍保留单行和 `PromptLanguage` 描述语言校验。
 - `commit.analyzeCount`：分析的最近非合并提交数量，必须为正数。
 - `commit.minimumSamples`：确认历史风格所需的最少样本，必须为正数且不大于 `analyzeCount`。
 - `commit.confidenceThreshold`：最高风格占比阈值，范围为 `(0, 1]`。
@@ -228,9 +240,11 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\commit-style.p
 
 `publish.release.mode` 支持：
 
-- `publish-draft`：工作流先创建草稿 Release，脚本校验产物后公开。
-- `create`：脚本在工作流成功后创建 Release；用 `uploadAssets` 列出要上传的文件或通配符。
+- `publish-draft`：工作流先创建草稿 Release；脚本校验必需资产、大小和 GitHub SHA256，下载复核后才公开。
+- `create`：脚本在工作流成功后先创建草稿 Release；用 `uploadAssets` 列出文件或通配符，远端大小和 SHA256 必须与本地文件一致，下载复核后才公开。
 - `none`：只推送分支和标签，不创建 GitHub Release。
+
+`Publish` 可在同版本标签已存在时续跑，但本地与远端标签必须解析到当前 `HEAD`；任何标签冲突都会停止。已公开的同版本 Release 只做资产完整性复核，不再编辑。
 
 字符串字段支持 `{projectName}`、`{version}` 和 `{tag}` 占位符。`version.updates[].replacement` 同时支持 .NET 正则替换引用，例如 `${1}` 和 `$2`。
 

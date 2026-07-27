@@ -158,6 +158,136 @@ function Get-RepositoryCommitStyleAnalysis {
     -ConfidenceThreshold $confidenceThreshold
 }
 
+function Get-CommitDescription([string]$Subject) {
+  if ([string]::IsNullOrWhiteSpace($Subject)) { return "" }
+  switch (Get-CommitSubjectStyle $Subject) {
+    "conventional" { return ($Subject -replace '^[a-z][a-z0-9-]*(?:\([^)]+\))?!?:\s+', '') }
+    "ticketed" { return ($Subject -replace '^[A-Z][A-Z0-9]+-\d+(?::|\s+-?)\s*', '') }
+    "bracketed" { return ($Subject -replace '^\[[^\]]+\]\s+', '') }
+    "gitmoji" { return ($Subject -replace '^(?::[a-z0-9_+-]+:|\p{So})\s*', '') }
+    default { return $Subject }
+  }
+}
+
+function Get-CommitDescriptionLanguage([string]$Subject) {
+  $description = Get-CommitDescription $Subject
+  if ($description -match '[\u3400-\u4dbf\u4e00-\u9fff]') { return "Chinese" }
+  if ($description -match '[A-Za-z]') { return "English" }
+  return "Unknown"
+}
+
+function Get-CommitLanguageAnalysis {
+  [CmdletBinding()]
+  param(
+    [string[]]$Subjects = @(),
+    [ValidateSet("Auto", "Chinese", "English")]
+    [string]$PromptLanguage = "Chinese",
+    [int]$MinimumSamples = 3,
+    [double]$ConfidenceThreshold = 0.6
+  )
+
+  if ($MinimumSamples -lt 1) { throw "Commit minimumSamples must be positive" }
+  if ($ConfidenceThreshold -le 0 -or $ConfidenceThreshold -gt 1) {
+    throw "Commit confidenceThreshold must be greater than 0 and at most 1"
+  }
+
+  $counts = [ordered]@{ Chinese = 0; English = 0; Unknown = 0 }
+  $examples = [ordered]@{ Chinese = @(); English = @() }
+  foreach ($subject in @($Subjects | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) -and [string]$_ -notmatch '^Merge\s' })) {
+    $language = Get-CommitDescriptionLanguage ([string]$subject)
+    $counts[$language] = [int]$counts[$language] + 1
+    if ($language -in @("Chinese", "English") -and @($examples[$language]).Count -lt 2) {
+      $examples[$language] = @($examples[$language]) + [string]$subject
+    }
+  }
+
+  $selectedLanguage = $PromptLanguage
+  $reason = "prompt"
+  $fallbackUsed = $false
+  $confidence = 1.0
+  $classifiedCount = [int]$counts.Chinese + [int]$counts.English
+  if ($PromptLanguage -eq "Auto") {
+    $highest = [Math]::Max([int]$counts.Chinese, [int]$counts.English)
+    $confidence = if ($classifiedCount -gt 0) { [Math]::Round(([double]$highest / [double]$classifiedCount), 3) } else { 0.0 }
+    if ($classifiedCount -ge $MinimumSamples -and $counts.Chinese -ne $counts.English -and $confidence -ge $ConfidenceThreshold) {
+      $selectedLanguage = if ($counts.Chinese -gt $counts.English) { "Chinese" } else { "English" }
+      $reason = "repository-history"
+    }
+    else {
+      $selectedLanguage = "English"
+      $reason = if ($classifiedCount -lt $MinimumSamples) { "insufficient-samples" } elseif ($counts.Chinese -eq $counts.English) { "mixed-tie" } else { "low-confidence" }
+      $fallbackUsed = $true
+    }
+  }
+
+  return [pscustomobject][ordered]@{
+    requestedLanguage = $PromptLanguage
+    selectedLanguage = $selectedLanguage
+    reason = $reason
+    sampleCount = $classifiedCount
+    minimumSamples = $MinimumSamples
+    confidence = $confidence
+    confidenceThreshold = $ConfidenceThreshold
+    fallbackUsed = $fallbackUsed
+    fallback = "English"
+    counts = [pscustomobject]$counts
+    examples = [pscustomobject]$examples
+  }
+}
+
+function Get-RepositoryCommitLanguageAnalysis {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory)]
+    [string]$RepositoryRoot,
+    [ValidateSet("Auto", "Chinese", "English")]
+    [string]$PromptLanguage = "Chinese",
+    $CommitConfig = $null
+  )
+
+  $analyzeCount = [int](Get-CommitConfigProperty $CommitConfig "analyzeCount" 30)
+  $minimumSamples = [int](Get-CommitConfigProperty $CommitConfig "minimumSamples" 3)
+  $confidenceThreshold = [double](Get-CommitConfigProperty $CommitConfig "confidenceThreshold" 0.6)
+  if ($analyzeCount -lt 1) { throw "Commit analyzeCount must be positive" }
+
+  $previousPreference = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  try {
+    $subjects = @(& git -C $RepositoryRoot log "-$analyzeCount" --no-merges --pretty=%s 2>&1)
+    $exitCode = $LASTEXITCODE
+  }
+  finally {
+    $ErrorActionPreference = $previousPreference
+  }
+  if ($exitCode -ne 0) {
+    throw "Cannot read recent commit subjects: $($subjects -join [Environment]::NewLine)"
+  }
+  $subjects = @($subjects | Where-Object { $_ -isnot [Management.Automation.ErrorRecord] } | ForEach-Object { [string]$_ })
+  return Get-CommitLanguageAnalysis `
+    -Subjects $subjects `
+    -PromptLanguage $PromptLanguage `
+    -MinimumSamples $minimumSamples `
+    -ConfidenceThreshold $confidenceThreshold
+}
+
+function Assert-CommitSummaryLanguage {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory)]
+    [string]$Summary,
+    [Parameter(Mandatory)]
+    $Analysis
+  )
+
+  if ([string]::IsNullOrWhiteSpace($Summary)) { throw "Summary is required" }
+  if ($Summary -match "[`r`n]") { throw "Summary must be one line" }
+  $actualLanguage = Get-CommitDescriptionLanguage $Summary
+  $expectedLanguage = [string]$Analysis.selectedLanguage
+  if ($actualLanguage -ne $expectedLanguage) {
+    throw "Summary description language must be $expectedLanguage for PromptLanguage $($Analysis.requestedLanguage); detected $actualLanguage"
+  }
+}
+
 function Assert-CommitSummaryStyle {
   [CmdletBinding()]
   param(

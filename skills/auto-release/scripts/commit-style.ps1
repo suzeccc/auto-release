@@ -2,7 +2,9 @@
 param(
   [string]$RepositoryRoot = (Get-Location).Path,
   [string]$ConfigPath = ".codex-release.json",
-  [string]$Summary
+  [string]$Summary,
+  [ValidateSet("Auto", "Chinese", "English")]
+  [string]$PromptLanguage = "Chinese"
 )
 
 $ErrorActionPreference = "Stop"
@@ -44,9 +46,12 @@ if (Test-Path -LiteralPath $configFile -PathType Leaf) {
 }
 
 $analysis = Get-RepositoryCommitStyleAnalysis -RepositoryRoot $root -CommitConfig $commitConfig
+$languageAnalysis = Get-RepositoryCommitLanguageAnalysis -RepositoryRoot $root -PromptLanguage $PromptLanguage -CommitConfig $commitConfig
+$analysis | Add-Member -NotePropertyName commitLanguage -NotePropertyValue $languageAnalysis
 if (-not [string]::IsNullOrWhiteSpace($Summary)) {
   if ($Summary -match "[`r`n]") { throw "Summary must be one line" }
   Assert-CommitSummaryStyle -Summary $Summary -Analysis $analysis
+  Assert-CommitSummaryLanguage -Summary $Summary -Analysis $languageAnalysis
   $analysis | Add-Member -NotePropertyName summary -NotePropertyValue $Summary
   $analysis | Add-Member -NotePropertyName summaryValid -NotePropertyValue $true
 }

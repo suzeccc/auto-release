@@ -9,6 +9,9 @@ param(
 
   [string]$Summary,
 
+  [ValidateSet("Auto", "Chinese", "English")]
+  [string]$PromptLanguage = "Chinese",
+
   [string]$ReleaseNotes,
 
   [string]$RepositoryRoot = (Get-Location).Path,
@@ -50,6 +53,7 @@ $ErrorActionPreference = "Stop"
 $script:ResolvedRepositoryRoot = $null
 $script:Utf8NoBom = [Text.UTF8Encoding]::new($false)
 $script:Stage = "Initialize"
+$script:CommitLanguageAnalysis = $null
 $setupScript = Join-Path $PSScriptRoot "setup-project.ps1"
 $releaseScript = Join-Path $PSScriptRoot "release.ps1"
 $ignoreScript = Join-Path $PSScriptRoot "ignore-audit.ps1"
@@ -59,6 +63,12 @@ if (-not (Test-Path -LiteralPath $utilsScript -PathType Leaf)) {
   throw "Release utilities missing: $utilsScript"
 }
 . $utilsScript
+$commitTransactionScript = Join-Path $PSScriptRoot "commit-transaction.ps1"
+if (-not (Test-Path -LiteralPath $commitTransactionScript -PathType Leaf)) { throw "Commit transaction module missing: $commitTransactionScript" }
+. $commitTransactionScript
+$localBuildStateScript = Join-Path $PSScriptRoot "local-build-state.ps1"
+if (-not (Test-Path -LiteralPath $localBuildStateScript -PathType Leaf)) { throw "Local build state module missing: $localBuildStateScript" }
+. $localBuildStateScript
 
 if ($OutputFormat -eq "Json") {
   $InformationPreference = "SilentlyContinue"
@@ -111,12 +121,6 @@ function Invoke-GitChecked([string[]]$Arguments) {
   foreach ($line in @($output)) { Write-Host $line }
 }
 
-function Assert-ChineseSummary([string]$Value) {
-  if ([string]::IsNullOrWhiteSpace($Value)) { throw "A Chinese summary is required" }
-  if ($Value -match "[`r`n]") { throw "Summary must be one line" }
-  if ($Value -notmatch '[\u4e00-\u9fff]') { throw "Summary must contain Chinese text" }
-}
-
 function Write-OperationResult($Result) {
   if ($OutputFormat -eq "Json") {
     [Console]::Out.WriteLine(($Result | ConvertTo-Json -Depth 20 -Compress))
@@ -135,6 +139,9 @@ function Write-Preview($Preview) {
   if ($Preview.branch) { Write-Host "Branch: $($Preview.remote)/$($Preview.branch)" }
   if ($Preview.commitStyle) {
     Write-Host "Commit style: $($Preview.commitStyle.selectedStyle) ($($Preview.commitStyle.reason))"
+  }
+  if ($Preview.commitLanguage) {
+    Write-Host "Commit language: $($Preview.commitLanguage.selectedLanguage) ($($Preview.commitLanguage.reason))"
   }
   foreach ($group in @($Preview.commitPlan.groups)) {
     Write-Host "Commit: $($group.summary)"
@@ -171,6 +178,50 @@ function Read-ReleaseConfig {
   catch { throw "Release config is invalid JSON: $path" }
 }
 
+function Get-ConfigRelativePath {
+  $fullPath = Resolve-RepositoryPath $ConfigPath
+  $prefix = $script:ResolvedRepositoryRoot + [IO.Path]::DirectorySeparatorChar
+  return $fullPath.Substring($prefix.Length).Replace("\", "/")
+}
+
+function Test-GitPathTracked([string]$RelativePath) {
+  $previousPreference = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  try {
+    & git -C $script:ResolvedRepositoryRoot ls-files --error-unmatch -- $RelativePath 2>$null | Out-Null
+    $exitCode = $LASTEXITCODE
+  }
+  finally {
+    $ErrorActionPreference = $previousPreference
+  }
+  return $exitCode -eq 0
+}
+
+function Test-GitPathIgnored([string]$RelativePath) {
+  $previousPreference = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  try {
+    & git -C $script:ResolvedRepositoryRoot check-ignore -q --no-index -- $RelativePath 2>$null
+    $exitCode = $LASTEXITCODE
+  }
+  finally {
+    $ErrorActionPreference = $previousPreference
+  }
+  return $exitCode -eq 0
+}
+
+function Assert-LocalConfigReadyForCommit {
+  $configFile = Resolve-RepositoryPath $ConfigPath
+  if (-not (Test-Path -LiteralPath $configFile -PathType Leaf)) { return }
+  $relativePath = Get-ConfigRelativePath
+  if (-not (Test-GitPathIgnored $relativePath)) {
+    throw "Local release config must be ignored before commit: $relativePath. Run Ignore ApplyAndUntrack."
+  }
+  if (Test-GitPathTracked $relativePath) {
+    throw "Local release config is still tracked: $relativePath. Run Ignore ApplyAndUntrack."
+  }
+}
+
 function Get-ConfiguredCommitStyleAnalysis($Config) {
   $commitConfig = Get-OptionalProperty $Config "commit"
   return Get-RepositoryCommitStyleAnalysis `
@@ -178,10 +229,19 @@ function Get-ConfiguredCommitStyleAnalysis($Config) {
     -CommitConfig $commitConfig
 }
 
+function Get-ConfiguredCommitLanguageAnalysis($Config) {
+  $commitConfig = Get-OptionalProperty $Config "commit"
+  return Get-RepositoryCommitLanguageAnalysis `
+    -RepositoryRoot $script:ResolvedRepositoryRoot `
+    -PromptLanguage $PromptLanguage `
+    -CommitConfig $commitConfig
+}
+
 function Assert-ConfiguredCommitSummary($Config) {
-  Assert-ChineseSummary $Summary
   $analysis = Get-ConfiguredCommitStyleAnalysis $Config
+  $script:CommitLanguageAnalysis = Get-ConfiguredCommitLanguageAnalysis $Config
   Assert-CommitSummaryStyle -Summary $Summary -Analysis $analysis
+  Assert-CommitSummaryLanguage -Summary $Summary -Analysis $script:CommitLanguageAnalysis
   return $analysis
 }
 
@@ -231,285 +291,6 @@ function Assert-RemoteReady($Config, [bool]$UseConfiguredBranch = $true) {
     }
   }
   return [pscustomobject]@{ Branch = $target.Branch; Remote = $target.Remote; Exists = [bool]$remoteHead }
-}
-
-function Get-GitDirectory {
-  $gitDirectory = Invoke-GitCaptured @("rev-parse", "--git-dir")
-  if (-not [IO.Path]::IsPathRooted($gitDirectory)) { $gitDirectory = Join-Path $script:ResolvedRepositoryRoot $gitDirectory }
-  return Get-NormalizedPath $gitDirectory
-}
-
-function Backup-GitIndex {
-  $indexPath = Join-Path (Get-GitDirectory) "index"
-  return [pscustomobject]@{
-    Path = $indexPath
-    Exists = Test-Path -LiteralPath $indexPath -PathType Leaf
-    Bytes = if (Test-Path -LiteralPath $indexPath -PathType Leaf) { [IO.File]::ReadAllBytes($indexPath) } else { $null }
-  }
-}
-
-function Restore-GitIndex($Backup) {
-  if ($Backup.Exists) { [IO.File]::WriteAllBytes($Backup.Path, [byte[]]$Backup.Bytes) }
-  elseif (Test-Path -LiteralPath $Backup.Path -PathType Leaf) { Remove-Item -LiteralPath $Backup.Path -Force }
-}
-
-function Assert-NoConflicts {
-  $conflicts = Invoke-GitCaptured @("diff", "--name-only", "--diff-filter=U")
-  if ($conflicts) { throw "Unresolved Git conflicts: $conflicts" }
-}
-
-function Assert-NoStagedSecrets {
-  $paths = @((Invoke-GitCaptured @("diff", "--cached", "--name-only", "--diff-filter=ACMR")) -split "`r?`n" | Where-Object { $_ })
-  foreach ($path in $paths) {
-    $normalized = $path.Replace("\", "/")
-    $leaf = [IO.Path]::GetFileName($normalized)
-    $isExample = $leaf -match '(?i)\.(?:example|sample|template)$'
-    if (-not $isExample -and $normalized -match '(?i)(^|/)(?:\.env(?:\..+)?|id_(?:rsa|dsa|ecdsa|ed25519)|credentials?(?:\..+)?|secrets?(?:\..+)?|[^/]+\.(?:pem|p12|pfx|key))$') {
-      throw "Refusing to commit possible secret file: $path"
-    }
-  }
-  $diff = Invoke-GitCaptured @("diff", "--cached", "--no-ext-diff", "--unified=0", "--", ".")
-  if ($diff -match '(?m)^\+(?!\+\+).*(?:ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[A-Z0-9]{16}|-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----)') {
-    throw "Refusing to commit content that looks like a credential"
-  }
-}
-
-function Get-ChangedPaths {
-  $tracked = @((Invoke-GitCaptured @("diff", "HEAD", "--name-only", "--no-renames", "--")) -split "`r?`n" | Where-Object { $_ })
-  $untracked = @((Invoke-GitCaptured @("ls-files", "--others", "--exclude-standard")) -split "`r?`n" | Where-Object { $_ })
-  return @($tracked + $untracked | ForEach-Object { $_.Replace("\", "/") } | Sort-Object -Unique)
-}
-
-function Get-PlanRelativePath([string]$Path) {
-  if ([string]::IsNullOrWhiteSpace($Path)) { throw "Commit plan contains an empty path" }
-  if ($Path.IndexOfAny([char[]]@("*", "?", "[", "]")) -ge 0) {
-    throw "Commit plan paths must be exact and cannot contain wildcards: $Path"
-  }
-  $fullPath = if ([IO.Path]::IsPathRooted($Path)) {
-    [IO.Path]::GetFullPath($Path)
-  }
-  else {
-    [IO.Path]::GetFullPath((Join-Path $script:ResolvedRepositoryRoot $Path))
-  }
-  $rootPrefix = $script:ResolvedRepositoryRoot + [IO.Path]::DirectorySeparatorChar
-  if (-not $fullPath.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase)) {
-    throw "Commit plan path escapes repository root: $Path"
-  }
-  $relative = $fullPath.Substring($rootPrefix.Length).Replace("\", "/")
-  if ($relative -match '(^|/)\.git(/|$)') { throw "Commit plan cannot include Git metadata: $Path" }
-  return $relative
-}
-
-function Get-CommitPlanFilePath {
-  if ([string]::IsNullOrWhiteSpace($CommitPlanPath)) {
-    throw "CommitPlanPath is required when CommitStrategy is AutoSplit"
-  }
-  $fullPath = if ([IO.Path]::IsPathRooted($CommitPlanPath)) {
-    [IO.Path]::GetFullPath($CommitPlanPath)
-  }
-  else {
-    [IO.Path]::GetFullPath((Join-Path $script:ResolvedRepositoryRoot $CommitPlanPath))
-  }
-  $gitDirectory = Get-GitDirectory
-  $gitPrefix = $gitDirectory + [IO.Path]::DirectorySeparatorChar
-  if (-not $fullPath.StartsWith($gitPrefix, [StringComparison]::OrdinalIgnoreCase)) {
-    throw "Commit plan must be stored under the Git directory: $gitDirectory"
-  }
-  if (-not (Test-Path -LiteralPath $fullPath -PathType Leaf)) { throw "Commit plan not found: $fullPath" }
-  return $fullPath
-}
-
-function Get-PathContentFingerprint([string[]]$Paths) {
-  $entries = @()
-  foreach ($path in @($Paths | Sort-Object -Unique)) {
-    $fullPath = [IO.Path]::GetFullPath((Join-Path $script:ResolvedRepositoryRoot $path))
-    if (-not (Test-Path -LiteralPath $fullPath -PathType Leaf)) {
-      $entries += "$path`:missing"
-      continue
-    }
-    $entries += "$path`:$((Get-FileHash -Algorithm SHA256 -LiteralPath $fullPath).Hash)"
-  }
-  $bytes = $script:Utf8NoBom.GetBytes(($entries -join "`n"))
-  $sha = [Security.Cryptography.SHA256]::Create()
-  try { return ([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace("-", "") }
-  finally { $sha.Dispose() }
-}
-
-function Read-CommitPlan($CommitAnalysis) {
-  $path = Get-CommitPlanFilePath
-  try { $rawPlan = Get-Content -Raw -Encoding UTF8 -LiteralPath $path | ConvertFrom-Json }
-  catch { throw "Commit plan is invalid JSON: $path" }
-  if ([int](Get-OptionalProperty $rawPlan "schemaVersion" 0) -ne 1) {
-    throw "Commit plan schemaVersion must be 1"
-  }
-  $baseHead = Invoke-GitCaptured @("rev-parse", "HEAD")
-  $plannedBase = [string](Get-OptionalProperty $rawPlan "baseHead" "")
-  if ($plannedBase -and $plannedBase -ne $baseHead) {
-    throw "Commit plan baseHead does not match the current HEAD"
-  }
-  $groups = @($rawPlan.groups)
-  if ($groups.Count -lt 2) { throw "AutoSplit requires at least two commit groups" }
-  if ($groups.Count -gt $MaxCommits) { throw "Commit plan exceeds MaxCommits ($MaxCommits)" }
-
-  $actualPaths = @(Get-ChangedPaths)
-  if ($actualPaths.Count -eq 0) { throw "There are no changes to commit" }
-  $actualSet = @{}
-  foreach ($pathValue in $actualPaths) { $actualSet[$pathValue] = $true }
-  $plannedSet = @{}
-  $normalizedGroups = @()
-  foreach ($group in $groups) {
-    $summaryValue = [string](Get-OptionalProperty $group "summary" "")
-    Assert-ChineseSummary $summaryValue
-    Assert-CommitSummaryStyle -Summary $summaryValue -Analysis $CommitAnalysis
-    $paths = @($group.paths | ForEach-Object { Get-PlanRelativePath ([string]$_) })
-    if ($paths.Count -eq 0) { throw "Commit group has no paths: $summaryValue" }
-    foreach ($relative in $paths) {
-      if ($plannedSet.ContainsKey($relative)) { throw "Commit plan path appears more than once: $relative" }
-      if (-not $actualSet.ContainsKey($relative)) { throw "Commit plan includes an unchanged path: $relative" }
-      $plannedSet[$relative] = $true
-    }
-    $normalizedGroups += [pscustomobject][ordered]@{
-      summary = $summaryValue
-      paths = @($paths | Sort-Object -Unique)
-    }
-  }
-  $missing = @($actualPaths | Where-Object { -not $plannedSet.ContainsKey($_) })
-  if ($missing.Count -gt 0) { throw "Commit plan does not cover all changes: $($missing -join ', ')" }
-  return [pscustomobject][ordered]@{
-    schemaVersion = 1
-    baseHead = $baseHead
-    groups = $normalizedGroups
-    path = $path
-  }
-}
-
-function Commit-PlannedChanges([bool]$Push) {
-  Assert-NoConflicts
-  $config = Read-ReleaseConfig
-  $commitAnalysis = Get-ConfiguredCommitStyleAnalysis $config
-  $plan = Read-CommitPlan $commitAnalysis
-  $remoteState = Assert-RemoteReady $config $false
-  $target = Get-BranchAndRemote $config $false
-  $baseHead = [string]$plan.baseHead
-  $indexBackup = Backup-GitIndex
-  $allPaths = @($plan.groups | ForEach-Object { @($_.paths) })
-  $contentFingerprint = Get-PathContentFingerprint $allPaths
-  $transactionBranch = "auto-release/transaction-$([guid]::NewGuid().ToString('N'))"
-  $commits = @()
-  $finalized = $false
-  try {
-    Invoke-GitChecked @("add", "-A")
-    Assert-NoStagedSecrets
-    Restore-GitIndex $indexBackup
-
-    Invoke-GitChecked @("switch", "-c", $transactionBranch, $baseHead)
-    foreach ($group in @($plan.groups)) {
-      Invoke-GitChecked @("reset", "--mixed", "HEAD")
-      Invoke-GitChecked (@("add", "-A", "--") + @($group.paths))
-      Assert-NoStagedSecrets
-      Invoke-GitChecked @("diff", "--cached", "--check")
-      & git -C $script:ResolvedRepositoryRoot diff --cached --quiet
-      if ($LASTEXITCODE -eq 0) { throw "Commit group has no staged changes: $($group.summary)" }
-      if ($LASTEXITCODE -ne 1) { throw "git diff --cached --quiet failed" }
-      Invoke-GitChecked @("commit", "-m", [string]$group.summary)
-      $commits += [pscustomobject][ordered]@{
-        summary = [string]$group.summary
-        head = Invoke-GitCaptured @("rev-parse", "HEAD")
-        paths = @($group.paths)
-      }
-    }
-
-    if ((Get-PathContentFingerprint $allPaths) -ne $contentFingerprint) {
-      throw "Planned files changed during the commit transaction"
-    }
-    $remaining = Invoke-GitCaptured @("status", "--porcelain", "--untracked-files=all")
-    if ($remaining) { throw "Unplanned changes appeared during the commit transaction: $remaining" }
-
-    Invoke-GitChecked @("switch", $target.Branch)
-    Invoke-GitChecked @("merge", "--ff-only", $transactionBranch)
-    $finalized = $true
-    Invoke-GitChecked @("branch", "-D", $transactionBranch)
-
-    if ($Push) {
-      $remoteState = Assert-RemoteReady $config $false
-      $arguments = @("push", $remoteState.Remote, $remoteState.Branch)
-      if (-not $remoteState.Exists) { $arguments = @("push", "--set-upstream", $remoteState.Remote, $remoteState.Branch) }
-      Invoke-GitChecked $arguments
-      Write-Host "Pushed $($commits.Count) commits: $($remoteState.Remote)/$($remoteState.Branch)"
-    }
-  }
-  catch {
-    $failure = $_
-    if (-not $finalized) {
-      try {
-        $currentBranch = Invoke-GitCaptured @("branch", "--show-current")
-        if ($currentBranch -eq $transactionBranch) {
-          Invoke-GitChecked @("reset", "--mixed", $baseHead)
-          Invoke-GitChecked @("switch", $target.Branch)
-        }
-        Restore-GitIndex $indexBackup
-        $branchExists = Invoke-GitCaptured @("branch", "--list", $transactionBranch)
-        if ($branchExists) { Invoke-GitChecked @("branch", "-D", $transactionBranch) }
-      }
-      catch { Write-Warning "Commit transaction rollback needs manual inspection: $($_.Exception.Message)" }
-    }
-    throw $failure
-  }
-
-  return [pscustomobject][ordered]@{
-    Committed = $commits.Count -gt 0
-    CommitCount = $commits.Count
-    Commits = $commits
-    Head = Invoke-GitCaptured @("rev-parse", "HEAD")
-    CommitStyle = $commitAnalysis
-  }
-}
-
-function Commit-AllChanges(
-  [bool]$Push,
-  [string]$ExpectedSourceFingerprint = "",
-  [bool]$UseConfiguredBranch = $true
-) {
-  Assert-NoConflicts
-  $config = Read-ReleaseConfig
-  $commitAnalysis = Assert-ConfiguredCommitSummary $config
-  $remoteState = Assert-RemoteReady $config $UseConfiguredBranch
-  $indexBackup = Backup-GitIndex
-  $committed = $false
-  try {
-    Invoke-GitChecked @("add", "-A")
-    Assert-NoStagedSecrets
-    if ($ExpectedSourceFingerprint -and (Get-SourceFingerprint $config) -ne $ExpectedSourceFingerprint) {
-      throw "Source files changed after the verified build; release stopped before commit"
-    }
-    & git -C $script:ResolvedRepositoryRoot diff --cached --quiet
-    $hasChanges = $LASTEXITCODE -eq 1
-    if ($LASTEXITCODE -notin @(0, 1)) { throw "git diff --cached --quiet failed" }
-    if ($hasChanges) {
-      Invoke-GitChecked @("commit", "-m", $Summary)
-      $committed = $true
-      Write-Host "Committed all changes: $Summary"
-    }
-    else {
-      Write-Host "No working tree or index changes to commit"
-    }
-  }
-  catch {
-    if (-not $committed) { Restore-GitIndex $indexBackup }
-    throw
-  }
-
-  if ($Push) {
-    $arguments = @("push", $remoteState.Remote, $remoteState.Branch)
-    if (-not $remoteState.Exists) { $arguments = @("push", "--set-upstream", $remoteState.Remote, $remoteState.Branch) }
-    Invoke-GitChecked $arguments
-    Write-Host "Pushed: $($remoteState.Remote)/$($remoteState.Branch)"
-  }
-  return [pscustomobject]@{
-    Committed = $committed
-    Head = Invoke-GitCaptured @("rev-parse", "HEAD")
-    CommitStyle = $commitAnalysis
-  }
 }
 
 function Get-WorkflowSettings($Config) {
@@ -562,253 +343,6 @@ function Ensure-ReleaseAutomation([string]$RequestedOperation) {
   return Read-ReleaseConfig
 }
 
-function Get-CurrentVersion($Config) {
-  $read = $Config.version.read
-  $path = Resolve-RepositoryPath ([string]$read.path)
-  $match = [regex]::Match([IO.File]::ReadAllText($path), [string]$read.pattern)
-  if (-not $match.Success -or -not $match.Groups["version"].Success) { throw "Cannot read the current project version" }
-  return $match.Groups["version"].Value
-}
-
-function Get-VersionPatternsByPath($Config) {
-  $patterns = @{}
-  $readPath = ([string]$Config.version.read.path).Replace("\", "/")
-  $patterns[$readPath] = @([string]$Config.version.read.pattern)
-  foreach ($update in @(Get-OptionalProperty $Config.version "updates" @())) {
-    $path = ([string]$update.path).Replace("\", "/")
-    if (-not $patterns.ContainsKey($path)) { $patterns[$path] = @() }
-    $patterns[$path] += [string]$update.pattern
-  }
-  return $patterns
-}
-
-function Get-NormalizedFileHash([string]$RelativePath, $VersionPatterns) {
-  $fullPath = Resolve-RepositoryPath $RelativePath
-  if (-not (Test-Path -LiteralPath $fullPath -PathType Leaf)) { return "missing" }
-  if ($VersionPatterns.ContainsKey($RelativePath)) {
-    $content = [IO.File]::ReadAllText($fullPath)
-    foreach ($pattern in @($VersionPatterns[$RelativePath])) {
-      try {
-        $regex = [regex]::new($pattern)
-        $content = $regex.Replace($content, {
-          param($match)
-          return ([regex]::new('\d+\.\d+\.\d+')).Replace($match.Value, '<release-version>', 1)
-        })
-      }
-      catch { throw "Invalid version fingerprint pattern for ${RelativePath}: $pattern" }
-    }
-    $bytes = $script:Utf8NoBom.GetBytes($content)
-  }
-  else {
-    $bytes = [IO.File]::ReadAllBytes($fullPath)
-  }
-  $sha = [Security.Cryptography.SHA256]::Create()
-  try { return ([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace("-", "") }
-  finally { $sha.Dispose() }
-}
-
-function Get-SourceFingerprint($Config) {
-  $tracked = @((Invoke-GitCaptured @("ls-files")) -split "`r?`n" | Where-Object { $_ })
-  $untracked = @((Invoke-GitCaptured @("ls-files", "--others", "--exclude-standard")) -split "`r?`n" | Where-Object { $_ })
-  $untracked = @($untracked | Where-Object {
-    $_.Replace("\", "/") -notmatch '(^|/)(?:\.venv|bin|build|dist|node_modules|obj|out|output|release|target|vendor|venv)(/|$)'
-  })
-  $patterns = Get-VersionPatternsByPath $Config
-  $entries = @()
-  foreach ($path in @($tracked + $untracked | Sort-Object -Unique)) {
-    $normalized = $path.Replace("\", "/")
-    $entries += "$normalized`:$((Get-NormalizedFileHash $normalized $patterns))"
-  }
-  $payload = $script:Utf8NoBom.GetBytes(($entries -join "`n"))
-  $sha = [Security.Cryptography.SHA256]::Create()
-  try { return ([BitConverter]::ToString($sha.ComputeHash($payload))).Replace("-", "") }
-  finally { $sha.Dispose() }
-}
-
-function Get-ReceiptPath([string]$DirectoryName = "auto-release", [bool]$CreateDirectory = $true) {
-  $directory = Join-Path (Get-GitDirectory) $DirectoryName
-  if ($CreateDirectory -and -not (Test-Path -LiteralPath $directory -PathType Container)) {
-    New-Item -ItemType Directory -Path $directory | Out-Null
-  }
-  return Join-Path $directory "local-build.json"
-}
-
-function Read-LocalBuildReceipt {
-  $path = Get-ReceiptPath "auto-release" $false
-  if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-    $path = Get-ReceiptPath "project-release-automator" $false
-  }
-  if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $null }
-  try { return Get-Content -Raw -Encoding UTF8 -LiteralPath $path | ConvertFrom-Json }
-  catch { return $null }
-}
-
-function Get-ReceiptArtifactPaths {
-  $receipt = Read-LocalBuildReceipt
-  if (-not $receipt) { return @() }
-  return @($receipt.artifacts | ForEach-Object { [string]$_.path } | Where-Object { $_ })
-}
-
-function Get-ArtifactManifestPath {
-  $directory = Split-Path -Parent (Get-ReceiptPath)
-  return Join-Path $directory "artifacts.json"
-}
-
-function Expand-ArtifactToken([string]$Value, $Config, [string]$CurrentVersion) {
-  $prefix = [string](Get-OptionalProperty $Config "tagPrefix" "v")
-  return $Value.Replace("{projectName}", [string]$Config.projectName).
-    Replace("{version}", $CurrentVersion).
-    Replace("{tag}", "$prefix$CurrentVersion")
-}
-
-function Get-LocalArtifactRecords($Config, [string]$ManifestPath = "") {
-  if ($ManifestPath -and (Test-Path -LiteralPath $ManifestPath -PathType Leaf)) {
-    try { $manifest = Get-Content -Raw -Encoding UTF8 -LiteralPath $ManifestPath | ConvertFrom-Json }
-    catch { throw "Local artifact manifest is invalid: $ManifestPath" }
-    $manifestRecords = @($manifest.artifacts)
-    foreach ($record in $manifestRecords) {
-      $path = Resolve-RepositoryPath ([string]$record.path)
-      if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-        throw "Manifest artifact not found: $($record.path)"
-      }
-      $record.sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash
-    }
-    return @($manifestRecords | Select-Object path, sha256 | Sort-Object path -Unique)
-  }
-  $records = @()
-  $currentVersion = Get-CurrentVersion $Config
-  $outputRelative = [string](Get-OptionalProperty $Config.prepare "localOutputDirectory" "output")
-  if ([string]::IsNullOrWhiteSpace($outputRelative)) { $outputRelative = "output" }
-  $outputPath = Resolve-RepositoryPath $outputRelative
-  if (Test-Path -LiteralPath $outputPath -PathType Container) {
-    foreach ($file in @(Get-ChildItem -LiteralPath $outputPath -File)) {
-      $relative = $file.FullName.Substring($script:ResolvedRepositoryRoot.Length + 1).Replace("\", "/")
-      $records += [pscustomobject]@{
-        path = $relative
-        sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $file.FullName).Hash
-      }
-    }
-  }
-  if ($records.Count -gt 0) {
-    return @($records | Sort-Object path -Unique)
-  }
-
-  foreach ($artifact in @(Get-OptionalProperty $Config.prepare "artifacts" @())) {
-    $relative = Expand-ArtifactToken ([string](Get-OptionalProperty $artifact "destination" $artifact.source)) $Config $currentVersion
-    $path = Resolve-RepositoryPath $relative
-    if (Test-Path -LiteralPath $path -PathType Leaf) {
-      $records += [pscustomobject]@{ path = $relative.Replace("\", "/"); sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash }
-    }
-  }
-  if ($records.Count -eq 0) {
-    $extensions = switch ([string]$Config.projectType) {
-      "tauri" { @(".exe", ".msi", ".dmg", ".appimage", ".deb", ".rpm") }
-      "node" { @(".tgz") }
-      "electron" { @(".exe", ".zip", ".dmg", ".appimage") }
-      "go" { @(".exe") }
-      "python" { @(".whl", ".gz") }
-      "rust" { @(".crate", ".exe") }
-      "dotnet" { @(".nupkg", ".exe") }
-      "java" { @(".jar") }
-      "cmake" { @(".exe", ".zip") }
-      "flutter" { @(".exe", ".apk", ".aab", ".zip") }
-      "android" { @(".apk", ".aab") }
-      default { @() }
-    }
-    foreach ($rootName in @("dist", "build", "out", "release", "target", "src-tauri\target\release")) {
-      $rootPath = Join-Path $script:ResolvedRepositoryRoot $rootName
-      if (-not (Test-Path -LiteralPath $rootPath -PathType Container)) { continue }
-      foreach ($file in Get-ChildItem -LiteralPath $rootPath -Recurse -File | Where-Object { $extensions -contains $_.Extension.ToLowerInvariant() } | Select-Object -First 200) {
-        $relative = $file.FullName.Substring($script:ResolvedRepositoryRoot.Length + 1).Replace("\", "/")
-        $records += [pscustomobject]@{ path = $relative; sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $file.FullName).Hash }
-      }
-    }
-  }
-  return @($records | Sort-Object path -Unique)
-}
-
-function Remove-StaleManagedArtifacts($Config, [string[]]$PreviousPaths, $CurrentArtifacts) {
-  $outputRelative = [string](Get-OptionalProperty $Config.prepare "localOutputDirectory" "output")
-  if ([string]::IsNullOrWhiteSpace($outputRelative)) { $outputRelative = "output" }
-  $outputRoot = Resolve-RepositoryPath $outputRelative
-  $outputPrefix = $outputRoot + [IO.Path]::DirectorySeparatorChar
-  $current = @{}
-  foreach ($artifact in @($CurrentArtifacts)) {
-    $current[([string]$artifact.path).Replace("\", "/").ToLowerInvariant()] = $true
-  }
-  foreach ($relativePath in @($PreviousPaths | Where-Object { $_ })) {
-    $key = $relativePath.Replace("\", "/").ToLowerInvariant()
-    if ($current.ContainsKey($key)) { continue }
-    $path = Resolve-RepositoryPath $relativePath
-    if (-not $path.StartsWith($outputPrefix, [StringComparison]::OrdinalIgnoreCase)) { continue }
-    if (Test-Path -LiteralPath $path -PathType Leaf) {
-      Remove-Item -LiteralPath $path -Force
-      Write-Host "Removed stale managed local artifact: $relativePath"
-    }
-  }
-}
-
-function Write-LocalBuildReceipt(
-  $Config,
-  [string]$ManifestPath = "",
-  [string[]]$PreviousPaths = @(),
-  [bool]$PruneStaleArtifacts = $false
-) {
-  $artifacts = @(Get-LocalArtifactRecords $Config $ManifestPath)
-  if ($PruneStaleArtifacts) {
-    Remove-StaleManagedArtifacts $Config $PreviousPaths $artifacts
-  }
-  $receipt = [pscustomobject][ordered]@{
-    schemaVersion = 1
-    projectType = [string]$Config.projectType
-    sourceFingerprint = Get-SourceFingerprint $Config
-    currentVersion = Get-CurrentVersion $Config
-    builtAtUtc = [DateTime]::UtcNow.ToString("o")
-    artifacts = $artifacts
-  }
-  [IO.File]::WriteAllText((Get-ReceiptPath), (($receipt | ConvertTo-Json -Depth 10) + "`n"), $script:Utf8NoBom)
-  if ($artifacts.Count -eq 0) { Write-Warning "Local build succeeded, but no verifiable local artifact was found; release will rebuild locally" }
-  else { Write-Host "Recorded local build receipt with $($artifacts.Count) artifact(s)" }
-}
-
-function Test-LocalBuildFresh($Config) {
-  $receipt = Read-LocalBuildReceipt
-  if (-not $receipt) { return $false }
-  if ([string]$receipt.projectType -ne [string]$Config.projectType) { return $false }
-  if ([string]$receipt.sourceFingerprint -ne (Get-SourceFingerprint $Config)) { return $false }
-  $artifacts = @($receipt.artifacts)
-  if ($artifacts.Count -eq 0) { return $false }
-  foreach ($artifact in $artifacts) {
-    $artifactPath = Resolve-RepositoryPath ([string]$artifact.path)
-    if (-not (Test-Path -LiteralPath $artifactPath -PathType Leaf)) { return $false }
-    if ((Get-FileHash -Algorithm SHA256 -LiteralPath $artifactPath).Hash -ne [string]$artifact.sha256) { return $false }
-  }
-  return $true
-}
-
-function Invoke-StableReleaseBuild($Config, [string]$ManifestPath) {
-  for ($attempt = 1; $attempt -le 2; $attempt++) {
-    $before = Get-SourceFingerprint $Config
-    if (Test-Path -LiteralPath $ManifestPath -PathType Leaf) {
-      Remove-Item -LiteralPath $ManifestPath -Force
-    }
-    $canonicalLocalOutput = [string](Get-OptionalProperty $Config.publish.release "mode" "none") -eq "publish-draft"
-    & $releaseScript -Mode Prepare -Version $Version -Summary $Summary `
-      -RepositoryRoot $script:ResolvedRepositoryRoot -ConfigPath $ConfigPath `
-      -ArtifactManifestPath $ManifestPath -CanonicalLocalOutput:$canonicalLocalOutput | Out-Host
-    $Config = Read-ReleaseConfig
-    $after = Get-SourceFingerprint $Config
-    if ($before -eq $after) {
-      Write-LocalBuildReceipt $Config $ManifestPath
-      return [pscustomobject]@{ Config = $Config; Fingerprint = $after }
-    }
-    if ($attempt -lt 2) {
-      Write-Warning "Source files changed during the verified build; rebuilding once with the new state"
-    }
-  }
-  throw "Source files kept changing during the verified build; release stopped"
-}
-
 function Invoke-WhatIfPreview {
   $config = Read-ReleaseConfig
   $detected = $null
@@ -821,19 +355,22 @@ function Invoke-WhatIfPreview {
   $remote = ""
   $fresh = $null
   $commitAnalysis = $null
+  $commitLanguageAnalysis = $null
   if ($Operation -eq "CommitPush") {
+    Assert-LocalConfigReadyForCommit
     $commitAnalysis = Get-ConfiguredCommitStyleAnalysis $config
+    $commitLanguageAnalysis = Get-ConfiguredCommitLanguageAnalysis $config
     $target = Get-BranchAndRemote $config $false
     $branch = $target.Branch
     $remote = $target.Remote
     if ($CommitStrategy -eq "AutoSplit") {
-      $commitPlan = Read-CommitPlan $commitAnalysis
+      $commitPlan = Read-CommitPlan $commitAnalysis $commitLanguageAnalysis
       $actions = @("validate exact commit-plan coverage", "create $(@($commitPlan.groups).Count) commits on a transaction branch", "fast-forward the current branch", "push all commits together")
     }
     else {
-      Assert-ChineseSummary $Summary
       Assert-CommitSummaryStyle -Summary $Summary -Analysis $commitAnalysis
-      $actions = @("stage all safe changes", "commit with the supplied Chinese summary", "push the current branch")
+      Assert-CommitSummaryLanguage -Summary $Summary -Analysis $commitLanguageAnalysis
+      $actions = @("stage all safe changes", "commit with the supplied prompt-language summary", "push the current branch")
     }
   }
   elseif ($Operation -eq "LocalBuild") {
@@ -848,10 +385,12 @@ function Invoke-WhatIfPreview {
   else {
     if (-not $Version) { throw "Version is required for Release" }
     $commitAnalysis = Assert-ConfiguredCommitSummary $config
+    $commitLanguageAnalysis = $script:CommitLanguageAnalysis
     if ([string]::IsNullOrWhiteSpace($ReleaseNotes) -or $ReleaseNotes -notmatch '[\u4e00-\u9fff]') {
       throw "Chinese ReleaseNotes are required for Release"
     }
     if ($config) {
+      Assert-LocalConfigReadyForCommit
       $target = Get-BranchAndRemote $config $true
       $branch = $target.Branch
       $remote = $target.Remote
@@ -871,6 +410,7 @@ function Invoke-WhatIfPreview {
     remote = $remote
     localBuildFresh = $fresh
     commitStyle = $commitAnalysis
+    commitLanguage = $commitLanguageAnalysis
     commitStrategy = $CommitStrategy
     commitPlan = $commitPlan
     changes = @($changesText -split "`r?`n" | Where-Object { $_ })
@@ -903,6 +443,7 @@ function Invoke-Main {
       foreach ($rule in @($result.plan.rules)) { Write-Host "Add: $($rule.pattern) - $($rule.reason)" }
       foreach ($item in @($result.plan.review)) { Write-Host "Review: $($item.pattern) - $($item.reason)" }
       foreach ($path in @($result.plan.untrackPaths)) { Write-Host "Tracked match: $path" }
+      foreach ($record in @($result.plan.trackedButIgnored)) { Write-Host "Tracked but ignored: $($record.path) <- $($record.pattern)" }
       foreach ($path in @($result.plan.sensitivePaths)) { Write-Host "Sensitive: $path" }
       Write-Host "Plan: $($result.planPath)"
     }
@@ -928,7 +469,7 @@ function Invoke-Main {
       Commit-AllChanges $true "" $false
     }
     Write-OperationResult ([pscustomobject][ordered]@{
-      operation = $Operation; status = "succeeded"; committed = $commit.Committed; commitCount = $commit.CommitCount; commits = $commit.Commits; head = $commit.Head; commitStyle = $commit.CommitStyle
+      operation = $Operation; status = "succeeded"; committed = $commit.Committed; commitCount = $commit.CommitCount; commits = $commit.Commits; head = $commit.Head; commitStyle = $commit.CommitStyle; commitLanguage = $commit.CommitLanguage
     })
     return
   }
@@ -979,7 +520,7 @@ function Invoke-Main {
 
   $localBuildIsFresh = -not $ForceRebuild -and (Test-LocalBuildFresh $config)
   $script:Stage = "Plan"
-  & $releaseScript -Mode Plan -Version $Version -Summary $Summary -RepositoryRoot $script:ResolvedRepositoryRoot -ConfigPath $ConfigPath | Out-Host
+  & $releaseScript -Mode Plan -Version $Version -Summary $Summary -PromptLanguage $PromptLanguage -RepositoryRoot $script:ResolvedRepositoryRoot -ConfigPath $ConfigPath | Out-Host
   $manifestPath = Get-ArtifactManifestPath
   try {
     $verifiedFingerprint = ""
@@ -987,7 +528,7 @@ function Invoke-Main {
     if ($localBuildIsFresh) {
       $before = Get-SourceFingerprint $config
       & $releaseScript -Mode Prepare -Version $Version -Summary $Summary `
-        -RepositoryRoot $script:ResolvedRepositoryRoot -ConfigPath $ConfigPath -SkipBuild | Out-Host
+        -PromptLanguage $PromptLanguage -RepositoryRoot $script:ResolvedRepositoryRoot -ConfigPath $ConfigPath -SkipBuild | Out-Host
       $config = Read-ReleaseConfig
       $after = Get-SourceFingerprint $config
       if ($before -eq $after -and (Test-LocalBuildFresh $config)) {
@@ -1009,9 +550,9 @@ function Invoke-Main {
     $commit = Commit-AllChanges $false $verifiedFingerprint $true
     $script:Stage = "Publish"
     & $releaseScript -Mode Publish -Version $Version -Summary $Summary -ReleaseNotes $ReleaseNotes `
-      -RepositoryRoot $script:ResolvedRepositoryRoot -ConfigPath $ConfigPath -AllowExistingHead:(-not $commit.Committed)
+      -PromptLanguage $PromptLanguage -RepositoryRoot $script:ResolvedRepositoryRoot -ConfigPath $ConfigPath -AllowExistingHead:(-not $commit.Committed)
     Write-OperationResult ([pscustomobject][ordered]@{
-      operation = $Operation; status = "succeeded"; version = $Version; tag = "$([string](Get-OptionalProperty $config 'tagPrefix' 'v'))$($Version.TrimStart('v'))"; head = $commit.Head; localBuildReused = $localBuildIsFresh; commitStyle = $commitAnalysis
+      operation = $Operation; status = "succeeded"; version = $Version; tag = "$([string](Get-OptionalProperty $config 'tagPrefix' 'v'))$($Version.TrimStart('v'))"; head = $commit.Head; localBuildReused = $localBuildIsFresh; commitStyle = $commitAnalysis; commitLanguage = $commit.CommitLanguage
     })
   }
   finally {
