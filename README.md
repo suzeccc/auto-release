@@ -2,9 +2,11 @@
 
 [![License: MIT](https://img.shields.io/github/license/suzeccc/auto-release?style=flat-square)](LICENSE)
 
-面向 Codex 的项目发布 Skill：从 README 优化、本地构建、Git 忽略审计，到分类提交和 GitHub Release，把常见仓库操作收敛成一套有明确边界的工作流。
+![Auto Release：从 README、本地构建、忽略审计和分类提交到 GitHub Release](assets/auto-release-intro.png)
 
-它支持 12 类应用、库、桌面、移动、原生和容器项目。你只需告诉 Codex 想完成什么；Auto Release 会先识别当前仓库，再选择对应的配置、构建和发布策略。
+面向 Codex 的仓库交付 Skill：用自然语言完成 README 优化、本地构建、Git 忽略审计、分类提交与 GitHub Release，并为每一步提供明确的修改边界、预演和失败保护。
+
+Auto Release 支持 12 类应用、库、桌面、移动、原生和容器项目。你只需描述目标；它会先识别仓库和读者，再选择对应策略，不把本地构建误当发布，也不会在未授权时提交或推送。
 
 ## 快速开始
 
@@ -37,7 +39,7 @@ python -X utf8 "$env:USERPROFILE\.codex\skills\.system\skill-installer\scripts\i
 | 操作 | 适合做什么 | 默认会改什么 |
 |---|---|---|
 | `README` | 创建、重构或审计项目自述文件 | 只修改文档，不暂存、不提交、不推送 |
-| `LocalBuild` | 在本机验证项目能否构建 | 可生成本地构建配置和 `output/` 产物；不改版本和 Git |
+| `LocalBuild` | 在本机验证项目能否构建 | 可生成本地配置和 `output/` 产物；不改版本，不提交或推送 |
 | `Ignore` | 检查缺失规则、敏感路径和已跟踪生成文件 | 默认只生成审计计划；应用规则需要确认 |
 | `CommitPush` | 提交当前安全改动并推送当前分支 | 创建一个或多个 Git 提交，然后执行一次推送 |
 | `Release` | 发布稳定语义版本 | 可更新版本、构建、提交、推送标签并操作 GitHub Release |
@@ -70,7 +72,7 @@ Ignore 不负责提交或推送，也不会自动重写 Git 历史。计划细�
 
 ### CommitPush
 
-CommitPush 会同时检查已暂存、未暂存、删除和未跟踪文件，并执行内置的疑似凭据检查。它会分析仓库最近的提交风格；无法可靠确定时，回退到 Conventional Commits。
+CommitPush 会同时检查已暂存、未暂存、删除和未跟踪文件，并执行内置的疑似凭据检查。单提交、`AutoSplit` 分类提交和 Release 提交都固定使用 Conventional Commits，不会跟随历史切换成纯文本、工单前缀或 Gitmoji。
 
 当改动包含多个独立目的时，`AutoSplit` 可以按计划创建 2～4 个事务化提交。所有分组成功后才更新原分支并统一推送；无法可靠分类时退回单提交。
 
@@ -112,21 +114,22 @@ Release 按 `Plan → Prepare → Commit → Publish` 执行：
 
 专用应用类型优先识别。多个普通项目清单并存时，Auto Release 会停止并要求显式选择 `-ProjectType`，不会依赖不透明的猜测顺序。
 
-## 首次使用与项目文件
+## 生成文件与本地状态
 
 Auto Release 会按操作逐步准备配置：
 
 - 只做本地构建时，生成本地构建所需的 `.codex-release.json`，不创建 GitHub 工作流。
 - 需要正式发布时，补全发布配置并创建标签触发的工作流。
 
-完整发布配置通常包含：
+完整发布能力通常涉及：
 
 ```text
-.codex-release.json
-.github/workflows/release.yml
+.codex-release.json              # 可再生的本机配置
+.github/workflows/release.yml    # 可评审、可提交的托管工作流
+.git/auto-release/               # 收据和事务计划，仅保存在 Git 元数据中
 ```
 
-这两个文件属于项目，应与代码一起评审和提交。运行收据、Ignore 计划和分类提交计划存放在 `.git/auto-release/`，不会成为仓库内容。
+`.codex-release.json` 必须保留在本地、由 `.gitignore` 精确忽略且不得被 Git 跟踪；旧仓库仍在跟踪它时，可用 `Ignore ApplyAndUntrack` 只移除索引记录，不删除本地文件。生成的托管工作流属于项目内容，应与代码一起评审和提交。`.git/auto-release/` 位于 Git 元数据目录，不会成为仓库内容。
 
 ## 现有工作流保护
 
@@ -210,7 +213,7 @@ $notes = @"
 
 </details>
 
-提交语言跟随触发操作的用户提示词：中文提示使用 `-PromptLanguage Chinese`，英文提示使用 `English`；用户明确指定语言时优先，混合提示无法可靠判断时使用 `Auto` 分析仓库历史。Conventional Commit 的类型和 scope 保持仓库规范，只切换描述语言；分类提交中的全部提交使用同一种语言。
+提交语言跟随触发操作的用户提示词：中文提示使用 `-PromptLanguage Chinese`，英文提示使用 `English`；用户明确指定语言时优先，混合提示无法可靠判断时使用 `Auto` 分析仓库历史。标题始终是 `type(scope): 描述` 或 `type: 描述`，类型和 scope 使用英文，只切换冒号后的描述语言；分类提交中的全部提交使用同一种语言。
 
 常用选项：
 
