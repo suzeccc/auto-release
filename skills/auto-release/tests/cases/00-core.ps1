@@ -18,6 +18,7 @@ $ignoreCandidatesScript = Join-Path $root "scripts\ignore-candidates.ps1"
 $utils = Join-Path $root "scripts\release-utils.ps1"
 $reference = Join-Path $root "references\config.md"
 $ignoreReference = Join-Path $root "references\ignore.md"
+$readmeReference = Join-Path $root "references\readme.md"
 $workflowTemplates = @(
   Join-Path $root "assets\workflows\tauri.yml"
   Join-Path $root "assets\workflows\node.yml"
@@ -90,7 +91,7 @@ function Write-TestUtf8([string]$Path, [string]$Content) {
   }
 }
 
-foreach ($path in @($script, $releaseGitHubScript, $releaseBuildScript, $setupScript, $setupProfilesScript, $setupGenerationScript, $invokeScript, $invokeCommitScript, $invokeBuildScript, $commitStyleScript, $ignoreScript, $ignoreGitScript, $ignoreCandidatesScript, $utils, $reference, $ignoreReference) + $workflowTemplates) {
+foreach ($path in @($script, $releaseGitHubScript, $releaseBuildScript, $setupScript, $setupProfilesScript, $setupGenerationScript, $invokeScript, $invokeCommitScript, $invokeBuildScript, $commitStyleScript, $ignoreScript, $ignoreGitScript, $ignoreCandidatesScript, $utils, $reference, $ignoreReference, $readmeReference) + $workflowTemplates) {
   if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
     throw "Required skill file missing: $path"
   }
@@ -100,6 +101,7 @@ foreach ($path in @($script, $releaseGitHubScript, $releaseBuildScript, $setupSc
 $scriptSource = (Get-Content -Raw -Encoding UTF8 $script) + "`n" + (Get-Content -Raw -Encoding UTF8 $releaseGitHubScript) + "`n" + (Get-Content -Raw -Encoding UTF8 $releaseBuildScript)
 $referenceSource = Get-Content -Raw -Encoding UTF8 $reference
 $releaseReferenceSource = Get-Content -Raw -Encoding UTF8 (Join-Path $root "references\release.md")
+$readmeReferenceSource = Get-Content -Raw -Encoding UTF8 $readmeReference
 
 $runJson = @'
 [

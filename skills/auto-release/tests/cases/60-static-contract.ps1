@@ -39,6 +39,13 @@ Assert-Match $skill 'PromptLanguage Chinese[\s\S]*PromptLanguage English[\s\S]*A
 Assert-Match $referenceSource 'publish-draft' "config reference missing draft strategy"
 Assert-Match $referenceSource 'uploadAssets' "config reference missing upload assets"
 Assert-Match $referenceSource 'PromptLanguage.*Chinese.*English.*Auto' "config reference missing prompt-language modes"
+Assert-Match $readmeReferenceSource 'Agent Skills' "README reference does not distinguish open Agent Skills positioning"
+Assert-Match $readmeReferenceSource 'name.*description' "README reference does not verify the minimum Skill manifest metadata"
+Assert-Match $readmeReferenceSource 'Codex' "README reference does not bound client-specific compatibility claims"
+Assert-Match $readmeReferenceSource '<div align="center">[\s\S]*<h1>[\s\S]*verified badges[\s\S]*README_EN\.md[\s\S]*</div>[\s\S]*!\[Project overview' "README reference does not define a bounded centered masthead"
+Assert-Match $readmeReferenceSource '\u5185\u5bb9\u5b8c\u6574.*\u6301\u7eed\u540c\u6b65' "README reference allows incomplete language navigation"
+Assert-Match $readmeReferenceSource '\u56fd\u65d7' "README reference does not define accessible language labels"
+Assert-Match $readmeReferenceSource 'Agent Skills Compatible' "README reference does not cover truthful Agent Skills badges"
 
 $setupSource = (Get-Content -Raw -Encoding UTF8 $setupScript) + "`n" + (Get-Content -Raw -Encoding UTF8 $setupProfilesScript) + "`n" + (Get-Content -Raw -Encoding UTF8 $setupGenerationScript)
 Assert-Match $setupSource 'Refusing to overwrite human-managed workflow' "setup script lacks workflow overwrite protection"
