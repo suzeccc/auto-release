@@ -1,16 +1,23 @@
-# Auto Release
-
-[![License: MIT](https://img.shields.io/github/license/suzeccc/auto-release?style=flat-square)](LICENSE)
+<div align="center">
+  <h1>Auto Release</h1>
+  <p>
+    <a href="https://agentskills.io/specification"><img src="https://img.shields.io/badge/Agent_Skills-compatible-111827?style=flat-square" alt="Agent Skills Compatible"></a>
+    <a href="#环境要求"><img src="https://img.shields.io/badge/PowerShell-5.1%2B-5391FE?style=flat-square&amp;logo=powershell&amp;logoColor=white" alt="PowerShell 5.1+"></a>
+    <a href="./LICENSE"><img src="https://img.shields.io/github/license/suzeccc/auto-release?style=flat-square" alt="License: MIT"></a>
+  </p>
+</div>
 
 ![Auto Release：从 README、本地构建、忽略审计和分类提交到 GitHub Release](assets/auto-release-intro.png)
 
-面向 Codex 的仓库交付 Skill：用自然语言完成 README 优化、本地构建、Git 忽略审计、分类提交与 GitHub Release，并为每一步提供明确的修改边界、预演和失败保护。
+面向 AI Agent 的仓库交付 Skill，兼容 Agent Skills 开放格式，并已在 Codex 上验证。它用自然语言完成 README 优化、本地构建、Git 忽略审计、分类提交与 GitHub Release，并为每一步提供明确的修改边界、预演和失败保护。
 
 Auto Release 支持 12 类应用、库、桌面、移动、原生和容器项目。你只需描述目标；它会先识别仓库和读者，再选择对应策略，不把本地构建误当发布，也不会在未授权时提交或推送。
 
+原生支持 Agent Skills 的客户端可以加载 `SKILL.md`；其他具备终端能力的 Agent 也可以显式调用 `scripts/`，但这不等同于原生 Skill 发现或完整客户端集成。
+
 ## 快速开始
 
-### 1. 安装
+### 1. 安装到 Codex（已验证）
 
 在 PowerShell 中运行：
 
@@ -22,7 +29,11 @@ python -X utf8 "$env:USERPROFILE\.codex\skills\.system\skill-installer\scripts\i
 
 安装完成后，新建一个 Codex 任务，让 Skill 列表刷新。
 
-### 2. 直接告诉 Codex 目标
+其他原生支持 Agent Skills 的工具，请按各自的 Skill 安装或发现方式加载 [`skills/auto-release`](skills/auto-release/)；只提供终端能力的 Agent 可以显式调用其中的 PowerShell 入口。
+
+### 2. 直接描述目标
+
+在 Codex 或其他已加载此 Skill 的兼容 Agent 中输入：
 
 ```text
 优化这个项目的 README
@@ -32,7 +43,7 @@ python -X utf8 "$env:USERPROFILE\.codex\skills\.system\skill-installer\scripts\i
 正式发布 v1.2.3
 ```
 
-如果目标不明确，Codex 会让你从 `README`、`LocalBuild`、`Ignore`、`CommitPush`、`Release` 中选择。只说“忽略”时默认执行只读审计，不会直接修改 `.gitignore`。
+如果目标不明确，Agent 会让你从 `README`、`LocalBuild`、`Ignore`、`CommitPush`、`Release` 中选择。只说“忽略”时默认执行只读审计，不会直接修改 `.gitignore`。
 
 ## 五种工作流
 
@@ -62,7 +73,7 @@ output/<项目名><扩展名>
 
 ### Ignore
 
-Ignore 会检查根目录和嵌套 `.gitignore`、当前 Git 状态、工具链缓存、构建输出、Agent/IDE 本地状态、测试报告和需要人工判断的路径。对于 Codex Skill 源码仓库，它会识别有效 `SKILL.md`，保护整个 Skill 根目录，并单独处理 `.install-test/` 本地安装验证沙箱。
+Ignore 会检查根目录和嵌套 `.gitignore`、当前 Git 状态、工具链缓存、构建输出、Agent/IDE 本地状态、测试报告和需要人工判断的路径。对于 Agent Skill 源码仓库，它会识别有效 `SKILL.md`，保护整个 Skill 根目录，并单独处理 `.install-test/` 本地安装验证沙箱。
 
 - `Audit`：只生成计划。
 - `Apply`：补全已确认的规则。
@@ -143,7 +154,7 @@ Auto Release 会按操作逐步准备配置：
 
 ## PowerShell 入口
 
-日常使用直接告诉 Codex 目标即可。需要调试、集成或脚本化时，可以调用底层入口。
+日常使用时直接向已加载此 Skill 的 Agent 描述目标即可。需要调试、集成或脚本化时，可以调用底层入口。
 
 <details>
 <summary>项目识别与初始化</summary>
@@ -188,7 +199,7 @@ $invoke = "$env:USERPROFILE\.codex\skills\auto-release\scripts\invoke-release.ps
   -Summary "docs: 更新项目说明" `
   -RepositoryRoot "<仓库根目录>"
 
-# 按 Codex 生成的计划分类提交并统一推送
+# 按 Agent 生成的计划分类提交并统一推送
 & $invoke -Operation CommitPush `
   -CommitStrategy AutoSplit `
   -PromptLanguage Chinese `
@@ -235,7 +246,7 @@ $notes = @"
 
 ## 环境要求
 
-- Codex
+- 原生支持 Agent Skills 的客户端（Codex 已验证），或能够显式调用 PowerShell 脚本的 Agent/终端环境
 - Windows PowerShell 5.1 或 PowerShell 7+
 - Git
 - Python（安装 Skill 或发布 Python 项目时需要）
