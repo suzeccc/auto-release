@@ -5,6 +5,7 @@
     <a href="#环境要求"><img src="https://img.shields.io/badge/PowerShell-5.1%2B-5391FE?style=flat-square&amp;logo=powershell&amp;logoColor=white" alt="PowerShell 5.1+"></a>
     <a href="./LICENSE"><img src="https://img.shields.io/github/license/suzeccc/auto-release?style=flat-square" alt="License: MIT"></a>
   </p>
+  <p><strong>简体中文</strong> · <a href="./README_EN.md">English</a></p>
 </div>
 
 ![Auto Release：从 README、本地构建、忽略审计和分类提交到 GitHub Release](assets/auto-release-intro.png)
