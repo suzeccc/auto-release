@@ -90,33 +90,32 @@ function Test-PathMatches($Candidate, [string]$Path) {
 
 function Get-CheckIgnoreRecords([string[]]$Paths) {
   if ($Paths.Count -eq 0) { return @() }
-  $inputText = (@($Paths) -join "`0") + "`0"
-  $result = Invoke-GitRaw `
-    -Arguments @("-c", "core.quotepath=false", "check-ignore", "-z", "-v", "--no-index", "--stdin") `
-    -StandardInput $inputText `
-    -AllowFailure $true
-  if ($result.ExitCode -notin @(0, 1)) { throw "git check-ignore failed: $($result.Error.TrimEnd("`r", "`n"))" }
-  if ([string]::IsNullOrEmpty($result.Output)) { return @() }
-  $fields = @($result.Output -split "`0")
   $records = @()
-  for ($index = 0; $index + 3 -lt $fields.Count; $index += 4) {
-    $source = [string]$fields[$index]
-    $line = [string]$fields[$index + 1]
-    $pattern = [string]$fields[$index + 2]
-    $path = [string]$fields[$index + 3]
-    if ([string]::IsNullOrEmpty($path)) { continue }
-    $records += [pscustomobject][ordered]@{
-      path = $path.Replace("\", "/")
-      pattern = $pattern
-      source = $source.Replace("\", "/")
-      line = if ($line -match '^\d+$') { [int]$line } else { 0 }
-    }
+  foreach ($path in @($Paths)) {
+    $record = Get-CheckIgnoreRecord ([string]$path)
+    if ($record) { $records += $record }
   }
   return $records
 }
 
+function Get-CheckIgnoreRecord([string]$Path) {
+  $result = Invoke-GitCaptured @("-c", "core.quotepath=false", "check-ignore", "-v", "--no-index", "--", $Path) $true
+  if ($result.ExitCode -eq 1) { return $null }
+  if ($result.ExitCode -ne 0) { throw "git check-ignore failed for $Path" }
+  $line = @($result.Output -split "`r?`n" | Where-Object { $_ } | Select-Object -Last 1)
+  if (-not $line) { return $null }
+  $match = [regex]::Match([string]$line, '^(?<source>.*?):(?<line>\d+):(?<pattern>[^\t]+)\t(?<path>.*)$')
+  if (-not $match.Success) { throw "Could not parse git check-ignore output for $Path" }
+  return [pscustomobject][ordered]@{
+    path = $match.Groups["path"].Value.Replace("\", "/")
+    pattern = $match.Groups["pattern"].Value
+    source = $match.Groups["source"].Value.Replace("\", "/")
+    line = [int]$match.Groups["line"].Value
+  }
+}
+
 function Test-IsIgnored([string]$Path) {
-  $record = @(Get-CheckIgnoreRecords @($Path)) | Select-Object -Last 1
+  $record = Get-CheckIgnoreRecord $Path
   if (-not $record) { return $false }
   return -not ([string]$record.pattern).StartsWith("!")
 }
