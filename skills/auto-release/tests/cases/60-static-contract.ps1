@@ -36,6 +36,9 @@ Assert-Match $skill 'Detect[\s\S]*Generate[\s\S]*Validate' "skill does not docum
 Assert-Match $skill 'LocalBuild[\s\S]*CommitPush[\s\S]*Release' "skill does not document the three user operations"
 Assert-Match $skill 'LocalBuild[\s\S]*Ignore[\s\S]*CommitPush[\s\S]*Release' "skill does not document all four user operations"
 Assert-Match $skill 'PromptLanguage Chinese[\s\S]*PromptLanguage English[\s\S]*Auto' "skill does not route commit language from the user prompt"
+Assert-Match $skill 'complete bilingual Chinese/English synchronization' "skill does not advertise complete bilingual README creation"
+Assert-Match $skill 'complete English or bilingual version' "skill does not trigger on English or bilingual README requests"
+Assert-Match $skill 'README\.md[\s\S]*README_EN\.md' "skill does not define the no-README English and bilingual file strategy"
 Assert-Match $referenceSource 'publish-draft' "config reference missing draft strategy"
 Assert-Match $referenceSource 'uploadAssets' "config reference missing upload assets"
 Assert-Match $referenceSource 'PromptLanguage.*Chinese.*English.*Auto' "config reference missing prompt-language modes"
@@ -46,6 +49,11 @@ Assert-Match $readmeReferenceSource '<div align="center">[\s\S]*<h1>[\s\S]*verif
 Assert-Match $readmeReferenceSource '\u5185\u5bb9\u5b8c\u6574.*\u6301\u7eed\u540c\u6b65' "README reference allows incomplete language navigation"
 Assert-Match $readmeReferenceSource '\u56fd\u65d7' "README reference does not define accessible language labels"
 Assert-Match $readmeReferenceSource 'Agent Skills Compatible' "README reference does not cover truthful Agent Skills badges"
+Assert-Match $readmeReferenceSource 'English README' "README reference does not define English README creation"
+Assert-Match $readmeReferenceSource 'README_EN\.md[\s\S]*README\.md' "README reference does not require symmetric bilingual navigation"
+Assert-Match $readmeReferenceSource 'README\.md[\s\S]*README_EN\.md[\s\S]*README\.md[\s\S]*README_EN\.md' "README reference does not prevent an orphan English README"
+Assert-Match $readmeReferenceSource 'PromptLanguage English' "README reference does not localize executable English examples"
+Assert-Match $readmeReferenceSource 'git diff --check -- README\.md README_EN\.md' "README reference does not validate both language files"
 
 $setupSource = (Get-Content -Raw -Encoding UTF8 $setupScript) + "`n" + (Get-Content -Raw -Encoding UTF8 $setupProfilesScript) + "`n" + (Get-Content -Raw -Encoding UTF8 $setupGenerationScript)
 Assert-Match $setupSource 'Refusing to overwrite human-managed workflow' "setup script lacks workflow overwrite protection"

@@ -1,6 +1,6 @@
 ---
 name: auto-release
-description: Detects and configures common application, library, native, mobile, desktop, container, and Codex Skill repositories, then provides audience-aware README creation and optimization, local test builds, deep .gitignore audits and safe rule completion, Conventional Commits single or grouped commit-and-push, formal GitHub releases, dry-run previews, and JSON results. Supports Tauri, Node.js, Go, Python, Rust, .NET, Java, CMake, Flutter, Android, Electron, and Docker. Use when the user asks to create, restructure, audit, or optimize a README/自述文件; build locally without changing version; inspect or complete Git ignore rules; stop tracking generated files without deleting them; classify changes into coherent commits and push them together; configure release automation; or publish a semantic version such as v1.2.3.
+description: Detects and configures common application, library, native, mobile, desktop, container, and Codex Skill repositories, then provides audience-aware README creation, optimization, and complete bilingual Chinese/English synchronization, local test builds, deep .gitignore audits and safe rule completion, Conventional Commits single or grouped commit-and-push, formal GitHub releases, dry-run previews, and JSON results. Supports Tauri, Node.js, Go, Python, Rust, .NET, Java, CMake, Flutter, Android, Electron, and Docker. Use when the user asks to create, restructure, audit, optimize, or translate a README/自述文件, including a complete English or bilingual version; build locally without changing version; inspect or complete Git ignore rules; stop tracking generated files without deleting them; classify changes into coherent commits and push them together; configure release automation; or publish a semantic version such as v1.2.3.
 ---
 
 # Auto Release
@@ -13,13 +13,17 @@ description: Detects and configures common application, library, native, mobile,
 
 | 操作 | 适用请求 | 必须读取 |
 |---|---|---|
-| `README` | 创建、重构、审计、优化根 `README.md` | [README 参考](references/readme.md) |
+| `README` | 创建、重构、审计、优化或制作中英文 README | [README 参考](references/readme.md) |
 | `LocalBuild` | 本地测试或打包，不改版本 | [LocalBuild 参考](references/local-build.md) |
 | `Ignore` | 审计或补全 `.gitignore`，安全停止跟踪本地文件 | [Ignore 参考](references/ignore.md) |
 | `CommitPush` | 提交全部安全更改并推送，必要时拆成多提交 | [CommitPush 参考](references/commit-push.md) |
 | `Release` | 发布 `vX.Y.Z`、等待工作流并公开 GitHub Release | [Release 参考](references/release.md) 与 [配置参考](references/config.md) |
 
 用户只说“忽略”时选择 `Ignore Audit`，先展示计划，不直接修改。用户只要求建议、检查或评价时保持只读；只有明确要求执行对应写操作时才修改、提交、推送或发布。
+
+用户要求创建英文自述文件或中英文版本时选择 `README`：先按源文档完成目标语言全文并验证内容一致性，再添加双向语言入口；只有语言链接或翻译占位不算完成。
+
+仓库尚无任何 README 时，按用户请求的语言建立主入口：只要求英文时直接创建英文 `README.md`；要求中英文双语时创建主 `README.md` 与 `README_EN.md`，除非仓库已有其他明确命名约定。不要创建缺少主 README 的孤立 `README_EN.md`。
 
 ## 初始化与验证
 
