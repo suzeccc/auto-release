@@ -84,7 +84,7 @@ Ignore 不负责提交或推送，也不会自动重写 Git 历史。计划细�
 
 ### CommitPush
 
-CommitPush 会同时检查已暂存、未暂存、删除和未跟踪文件，并执行内置的疑似凭据检查。单提交、`AutoSplit` 分类提交和 Release 提交都固定使用 Conventional Commits，不会跟随历史切换成纯文本、工单前缀或 Gitmoji。
+CommitPush 会同时检查已暂存、未暂存、删除和未跟踪文件，并执行内置的疑似凭据检查。单提交和 `AutoSplit` 分类提交固定使用 Conventional Commits，不会跟随历史切换成纯文本、工单前缀或 Gitmoji。Release 的版本提交同样使用 Conventional Commits，但不会复用 CommitPush 的全量暂存行为。
 
 当改动包含多个独立目的时，`AutoSplit` 可以按计划创建 2～4 个事务化提交。所有分组成功后才更新原分支并统一推送；无法可靠分类时退回单提交。
 
@@ -96,12 +96,12 @@ docs: 更新安装说明
 
 ### Release
 
-Release 按 `Plan → Prepare → Commit → Publish` 执行：
+Release 按 `Plan → Prepare → ReleaseCommit → Publish` 执行：
 
-1. 校验仓库、分支、远程、版本和发布说明。
+1. 校验仓库、分支、远程、版本和发布说明，并要求工作区干净。
 2. 更新版本文件并运行项目测试与构建。
-3. 检查本地构建结果和待提交内容。
-4. 提交版本变更，创建并原子推送标签。
+3. 检查本地构建结果，只允许本次生成的托管自动化文件和配置声明的版本文件进入发布提交。
+4. 精确提交发布专属变化，创建并原子推送标签；没有变化时不创建空提交。
 5. 等待配置的 GitHub Actions。
 6. 按配置检查所需发布资产，并创建或公开 GitHub Release。
 
@@ -242,6 +242,7 @@ $notes = @"
 - 远程分支领先或分叉时停止，不自动合并或变基。
 - `Ignore` 默认只读；应用和停止跟踪需要明确确认。
 - `CommitPush` 和 `Release` 会执行启发式敏感文件检查，但不能替代人工审查和专用密钥扫描工具。
+- `Release` 不会提交现有功能或文档改动；工作区不干净时应先独立执行 `CommitPush` 或人工处理。
 - `Release` 会修改版本、Git 和 GitHub；正式执行前可先使用 `-WhatIf` 查看计划。
 - 人工维护的工作流默认保持不变。
 

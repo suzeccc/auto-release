@@ -84,7 +84,7 @@ Ignore does not commit, push, or rewrite Git history. See [Ignore audit and appl
 
 ### CommitPush
 
-CommitPush checks staged, unstaged, deleted, and untracked files together and runs a built-in suspected-secret check. Single commits, `AutoSplit` commit groups, and Release commits always use Conventional Commits; they never switch to plain text, ticket prefixes, or Gitmoji based on repository history.
+CommitPush checks staged, unstaged, deleted, and untracked files together and runs a built-in suspected-secret check. Single commits and `AutoSplit` groups always use Conventional Commits; they never switch to plain text, ticket prefixes, or Gitmoji based on repository history. Release version commits also use Conventional Commits, but they do not reuse CommitPush's stage-all behavior.
 
 When changes contain multiple independent purposes, `AutoSplit` can create 2–4 transactional commits from a plan. The original branch is updated and pushed only after every group succeeds. If the changes cannot be classified reliably, it falls back to a single commit.
 
@@ -96,12 +96,12 @@ docs: update installation guide
 
 ### Release
 
-Release follows `Plan → Prepare → Commit → Publish`:
+Release follows `Plan → Prepare → ReleaseCommit → Publish`:
 
-1. Validate the repository, branch, remote, version, and release notes.
+1. Validate the repository, branch, remote, version, and release notes, and require a clean working tree.
 2. Update version files and run project tests and builds.
-3. Inspect the local build result and pending changes.
-4. Commit the version change, create the tag, and push both atomically.
+3. Inspect the local build result and allow only generated managed-automation files and configured version files into the release commit.
+4. Commit the exact release-owned changes, create the tag, and push both atomically; do not create an empty commit when nothing changed.
 5. Wait for the configured GitHub Actions workflow.
 6. Validate the required release assets and create or publish the GitHub Release according to configuration.
 
@@ -242,6 +242,7 @@ See the [`.codex-release.json` configuration reference](skills/auto-release/refe
 - Stop when the remote branch is ahead or diverged; do not merge or rebase automatically.
 - `Ignore` is read-only by default; applying rules or untracking files requires explicit confirmation.
 - `CommitPush` and `Release` run heuristic sensitive-file checks, but these do not replace human review or a dedicated secret scanner.
+- `Release` never absorbs existing feature or documentation changes; handle a dirty worktree with a separate `CommitPush` or manual commit first.
 - `Release` changes the version, Git, and GitHub; use `-WhatIf` to inspect the plan before a formal run.
 - Human-maintained workflows remain unchanged by default.
 

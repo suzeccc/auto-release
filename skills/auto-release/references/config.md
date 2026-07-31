@@ -76,7 +76,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\invoke-release
 
 执行器只按完整路径终止配置产物和上次收据记录的 EXE，不扫描或终止输出目录中的无关程序。`prepare.localArtifacts` 控制本地快速构建产物，`prepare.artifacts` 控制正式构建产物；`prepare.localSearchRoots` 为无法提前确定完整文件名的本地产物提供受限搜索根目录。`localName` 可覆盖统一输出文件名。`prepare.localOutputDirectory` 必须是无版本、无标签占位符的稳定路径。草稿式 GitHub Release 的正式操作只把本地验证产物写入该规范目录，不采用 `artifacts[].destination` 中的版本路径；GitHub Actions 负责正式发布包。成功后在 `.git/auto-release/local-build.json` 保存忽略发布版本值的源文件指纹、底层执行器返回的精确产物清单和 SHA256，并删除上次由 Skill 管理、这次不再生成的旧输出。默认复用有效收据；`-ForceRebuild` 强制重新构建。正式发布提交前再次校验源码指纹，避免构建后变化的文件进入发布提交。
 
-`CommitPush` 和 `Release` 明确执行全量暂存，包含已暂存、未暂存、删除和未跟踪文件，并遵守 `.gitignore`。`.codex-release.json` 必须已被忽略且不再被 Git 跟踪；迁移提交只记录其索引删除，本地文件保持不变。提交前拒绝 Git 冲突、明显凭据文件、私钥和常见 Token；失败时恢复原暂存区。
+`CommitPush` 明确执行全量暂存，包含已暂存、未暂存、删除和未跟踪文件，并遵守 `.gitignore`。`Release` 不复用该行为：它要求启动时工作区干净，只精确提交从该基准生成的托管自动化文件和 `version.updates[].path` 声明的版本文件；其他改动会中止发布并要求单独使用 `CommitPush`。`.codex-release.json` 必须已被忽略且不再被 Git 跟踪；迁移提交只记录其索引删除，本地文件保持不变。两种操作提交前都拒绝 Git 冲突、明显凭据文件、私钥和常见 Token。
 
 `CommitPush` 默认使用兼容的 `Single` 策略。需要把一轮改动拆成多个语义提交时，Codex 先把计划写入 Git 元数据目录，再传入 `-CommitStrategy AutoSplit -CommitPlanPath <path>`。计划不会进入仓库，必须精确列出全部改动路径，不接受通配符，同一文件不能重复出现。默认最多 4 组，可用 `-MaxCommits` 在 2 至 8 之间调整。
 

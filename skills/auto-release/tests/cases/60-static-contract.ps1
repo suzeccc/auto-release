@@ -29,7 +29,7 @@ if ($scriptSource -match 'gh.*run.*watch') {
 
 Assert-Match $skill '^---[\s\S]*name: auto-release' "skill name is not auto-release"
 Assert-Match $skill '\.codex-release\.json' "skill does not document repository config"
-Assert-Match $releaseReferenceSource 'Plan[\s\S]*Prepare[\s\S]*Publish' "release reference is missing phase order"
+Assert-Match $releaseReferenceSource 'Plan[\s\S]*Prepare[\s\S]*ReleaseCommit[\s\S]*Publish' "release reference is missing the isolated ReleaseCommit phase"
 Assert-Match $skill '`--force`' "missing force-push guard"
 Assert-Match $skill '`git add \.`' "missing staging guard"
 Assert-Match $skill 'Detect[\s\S]*Generate[\s\S]*Validate' "skill does not document project setup modes"
@@ -76,6 +76,12 @@ Assert-Match $invokeSource 'git.*"add", "-A"|@\("add", "-A"\)' "CommitPush does 
 Assert-Match $invokeSource 'possible secret file' "CommitPush lacks secret path protection"
 Assert-Match $invokeSource 'sourceFingerprint' "Release lacks local build freshness tracking"
 Assert-Match $invokeSource 'AllowExistingHead' "Release does not support unchanged working trees"
+Assert-Match $invokeSource 'ReleasePreflight[\s\S]*Assert-ReleaseWorkingTreeClean' "Release does not reject a dirty worktree before automation"
+Assert-Match $invokeSource 'Commit-ReleaseChanges' "Release does not use an isolated release commit"
+Assert-Match $invokeSource 'Release created changes outside its allowed paths' "Release does not reject build or concurrent changes outside its allowlist"
+if ($invokeSource -match '\$script:Stage = "ReleaseCommit"\s*\r?\n\s*\$commit = Commit-AllChanges') {
+  throw "Release still uses CommitPush-style all-change staging"
+}
 Assert-Match $invokeSource 'RequestedOperation -eq "LocalBuild"' "LocalBuild does not bypass GitHub workflow validation"
 Assert-Match $invokeSource 'Mode GenerateLocal' "First-time LocalBuild still creates a GitHub release workflow"
 Assert-Match $invokeSource 'Assert-CommitSummaryStyle' "CommitPush does not enforce Conventional Commits"

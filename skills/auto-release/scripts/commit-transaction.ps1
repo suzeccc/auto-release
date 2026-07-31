@@ -47,6 +47,39 @@ function Get-ChangedPaths {
   return @($tracked + $untracked | ForEach-Object { $_.Replace("\", "/") } | Sort-Object -Unique)
 }
 
+function Assert-ReleaseWorkingTreeClean {
+  Assert-NoConflicts
+  $status = Invoke-GitCaptured @("status", "--porcelain", "--untracked-files=all")
+  if ($status) {
+    throw "Release requires a clean working tree; run CommitPush separately before Release: $status"
+  }
+}
+
+function Get-ReleaseCommitPaths($Config, [string[]]$AutomationPaths) {
+  $paths = @()
+  foreach ($path in @($AutomationPaths)) {
+    $paths += Get-PlanRelativePath ([string]$path)
+  }
+  $version = Get-OptionalProperty $Config "version"
+  foreach ($update in @(Get-OptionalProperty $version "updates" @())) {
+    $paths += Get-PlanRelativePath ([string](Get-OptionalProperty $update "path" ""))
+  }
+  return @($paths | Sort-Object -Unique)
+}
+
+function Assert-ReleaseChangesAllowed([string[]]$AllowedPaths) {
+  $allowed = @{}
+  foreach ($path in @($AllowedPaths)) {
+    $allowed[(Get-PlanRelativePath ([string]$path))] = $true
+  }
+  $actual = @(Get-ChangedPaths)
+  $unexpected = @($actual | Where-Object { -not $allowed.ContainsKey($_) })
+  if ($unexpected.Count -gt 0) {
+    throw "Release created changes outside its allowed paths: $($unexpected -join ', '). Commit them with CommitPush separately or fix the build."
+  }
+  return $actual
+}
+
 function Get-PlanRelativePath([string]$Path) {
   if ([string]::IsNullOrWhiteSpace($Path)) { throw "Commit plan contains an empty path" }
   if ($Path.IndexOfAny([char[]]@("*", "?", "[", "]")) -ge 0) {
@@ -250,6 +283,59 @@ function Commit-PlannedChanges([bool]$Push) {
     Head = Invoke-GitCaptured @("rev-parse", "HEAD")
     CommitStyle = $commitAnalysis
     CommitLanguage = $commitLanguageAnalysis
+  }
+}
+
+function Commit-ReleaseChanges(
+  [string[]]$AllowedPaths,
+  [string]$ExpectedSourceFingerprint = ""
+) {
+  Assert-NoConflicts
+  Assert-LocalConfigReadyForCommit
+  $config = Read-ReleaseConfig
+  $commitAnalysis = Assert-ConfiguredCommitSummary $config
+  $commitLanguageAnalysis = $script:CommitLanguageAnalysis
+  Assert-RemoteReady $config $true | Out-Null
+  $actualPaths = @(Assert-ReleaseChangesAllowed $AllowedPaths)
+  if ($ExpectedSourceFingerprint -and (Get-SourceFingerprint $config) -ne $ExpectedSourceFingerprint) {
+    throw "Source files changed after the verified build; release stopped before commit"
+  }
+
+  $indexBackup = Backup-GitIndex
+  $committed = $false
+  try {
+    if ($actualPaths.Count -gt 0) {
+      Invoke-GitChecked (@("add", "-A", "--") + $actualPaths)
+      Assert-NoStagedSecrets
+      Invoke-GitChecked @("diff", "--cached", "--check")
+      $stagedPaths = @((Invoke-GitCaptured @("diff", "--cached", "--name-only", "--no-renames", "--")) -split "`r?`n" | Where-Object { $_ })
+      $unexpectedStaged = @($stagedPaths | Where-Object { $_.Replace("\", "/") -notin $actualPaths })
+      if ($unexpectedStaged.Count -gt 0) {
+        throw "Release staged paths outside its allowlist: $($unexpectedStaged -join ', ')"
+      }
+      Invoke-GitChecked @("commit", "-m", $Summary)
+      $committed = $true
+      Write-Host "Committed release-owned changes: $Summary"
+    }
+    else {
+      Write-Host "No release-owned changes to commit"
+    }
+  }
+  catch {
+    if (-not $committed) { Restore-GitIndex $indexBackup }
+    throw
+  }
+
+  $remaining = @(Get-ChangedPaths)
+  if ($remaining.Count -gt 0) {
+    throw "Release left uncommitted changes after ReleaseCommit: $($remaining -join ', ')"
+  }
+  return [pscustomobject]@{
+    Committed = $committed
+    Head = Invoke-GitCaptured @("rev-parse", "HEAD")
+    CommitStyle = $commitAnalysis
+    CommitLanguage = $commitLanguageAnalysis
+    Paths = $actualPaths
   }
 }
 

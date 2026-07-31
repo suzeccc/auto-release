@@ -59,7 +59,7 @@ $invoke = "$env:USERPROFILE\.codex\skills\auto-release\scripts\invoke-release.ps
 
 ## 不可绕过的保护
 
-- 只在 `CommitPush` 或 `Release` 中允许全量暂存；其他上下文禁止 `git add .`、`git add -A` 或等价操作。
+- 只有 `CommitPush` 允许全量暂存；`Release` 启动时必须是干净工作区，并且只能精确暂存本次发布生成的版本文件和托管自动化文件。发现普通改动时停止，提示用户另行执行 `CommitPush`。其他操作禁止 `git add .`、`git add -A` 或等价操作。
 - 禁止 `--force` 强制推送、移动或覆盖版本标签、自动合并、自动变基和自动解决远端分叉。
 - 禁止删除用户本地文件、宽泛执行 `git rm --cached .` 或自动重写历史。
 - 禁止提交未在当前任务中确认的本地产物或疑似凭据。

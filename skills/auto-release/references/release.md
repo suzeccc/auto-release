@@ -7,6 +7,7 @@
 - 稳定语义版本 `vX.Y.Z`。
 - 符合 Conventional Commits 且描述语言与触发提示词一致的单行 `Summary`。
 - 以配置标题开头、数量符合限制的中文 `ReleaseNotes`。
+- 干净工作区；普通功能、文档或修复改动必须先通过独立 `CommitPush` 处理。
 - 干净且可解释的发布配置、标签触发工作流和远端状态。
 
 ```powershell
@@ -25,24 +26,27 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File $invoke `
   -ReleaseNotes $notes -RepositoryRoot "<仓库根目录>"
 ```
 
-先用 `-WhatIf` 预览。正式执行固定为 `Plan -> Prepare -> Commit -> Publish`。
+先用 `-WhatIf` 预览。正式执行固定为 `Plan -> Prepare -> ReleaseCommit -> Publish`。
 
 ## Plan
 
 - 校验仓库根目录、配置分支、配置远端和可选 `remoteUrlPattern`。
+- 在创建或更新发布自动化之前要求暂存区、工作区和未跟踪文件均为空；存在普通改动时停止，不代替 `CommitPush` 提交。
 - 读取当前版本、状态、最近稳定标签后的提交和当前差异。
 - 强制验证 `Summary` 为 Conventional Commits 格式，不根据仓库历史切换格式。
 - 根据 `PromptLanguage` 验证提交描述语言；判定优先级和混合提示规则与 [CommitPush 参考](commit-push.md) 一致。
 - 只输出版本、构建、产物、工作流、Release 和原子 push 计划；不暂存或修改文件。
 
-## Prepare 与 Commit
+## Prepare 与 ReleaseCommit
 
 - 同步版本文件；正则替换数量必须精确匹配配置。
 - 运行完整测试与构建，整理产物并计算 SHA256；失败时回滚脚本引入的版本修改。
 - 并行任务首个失败后终止本次启动的兄弟进程。
 - 本地构建收据、源码指纹和产物哈希全部有效时可跳过重复本地程序构建；GitHub Actions 仍重新构建正式包。
 - 构建期间源码变化时用新状态重建一次；继续变化则停止。
-- 提交前重新验证源码指纹和敏感文件；没有变化时不创建空提交，但 `HEAD` 主题仍必须等于 `Summary`。
+- 发布提交白名单只包含：从干净基准生成或更新的托管自动化文件，以及 `version.updates[].path` 声明的版本文件。
+- 提交时只对上述精确路径执行暂存；构建命令、并发进程或其他工具产生白名单外改动时停止，不把它们并入 Release。
+- 提交前重新验证源码指纹和敏感文件；没有发布专属变化时不创建空提交，但 `HEAD` 主题仍必须等于 `Summary`。
 
 ## Publish
 

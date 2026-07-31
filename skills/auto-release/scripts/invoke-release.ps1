@@ -396,7 +396,7 @@ function Invoke-WhatIfPreview {
       $remote = $target.Remote
       $fresh = -not $ForceRebuild -and (Test-LocalBuildFresh $config)
     }
-    $actions = @("create or validate release automation", "plan version $Version", "run a verified build unless reusable", "commit safe changes", "atomically push branch and tag", "wait for GitHub Actions and publish the draft Release")
+    $actions = @("require a clean working tree", "create or validate release automation", "plan version $Version", "run a verified build unless reusable", "commit only release-owned version and managed automation changes", "atomically push branch and tag", "wait for GitHub Actions and publish the draft Release")
   }
   $changesText = Invoke-GitCaptured @("status", "--short")
   return [pscustomobject][ordered]@{
@@ -421,6 +421,10 @@ function Invoke-WhatIfPreview {
 function Invoke-Main {
   $script:Stage = "RepositoryCheck"
   Assert-RepositoryContext
+  if ($Operation -eq "Release") {
+    $script:Stage = "ReleasePreflight"
+    Assert-ReleaseWorkingTreeClean
+  }
   if ($Operation -eq "Ignore") {
     $script:Stage = "Ignore"
     if (-not (Test-Path -LiteralPath $ignoreScript -PathType Leaf)) { throw "Ignore audit script missing: $ignoreScript" }
@@ -476,6 +480,7 @@ function Invoke-Main {
 
   $script:Stage = "Automation"
   $config = Ensure-ReleaseAutomation $Operation
+  $releaseAutomationPaths = if ($Operation -eq "Release") { @(Get-ChangedPaths) } else { @() }
 
   if ($Operation -eq "LocalBuild") {
     $script:Stage = "LocalBuild"
@@ -517,6 +522,7 @@ function Invoke-Main {
   $releaseMode = [string](Get-OptionalProperty $config.publish.release "mode" "none")
   if ($releaseMode -eq "none") { throw "Release operation requires GitHub Release creation" }
   if (-not (Get-OptionalProperty $config.publish "workflow")) { throw "Release operation requires a tag-triggered build workflow" }
+  $releaseCommitPaths = @(Get-ReleaseCommitPaths $config $releaseAutomationPaths)
 
   $localBuildIsFresh = -not $ForceRebuild -and (Test-LocalBuildFresh $config)
   $script:Stage = "Plan"
@@ -546,8 +552,8 @@ function Invoke-Main {
       $config = $result.Config
       $verifiedFingerprint = $result.Fingerprint
     }
-    $script:Stage = "Commit"
-    $commit = Commit-AllChanges $false $verifiedFingerprint $true
+    $script:Stage = "ReleaseCommit"
+    $commit = Commit-ReleaseChanges $releaseCommitPaths $verifiedFingerprint
     $script:Stage = "Publish"
     & $releaseScript -Mode Publish -Version $Version -Summary $Summary -ReleaseNotes $ReleaseNotes `
       -PromptLanguage $PromptLanguage -RepositoryRoot $script:ResolvedRepositoryRoot -ConfigPath $ConfigPath -AllowExistingHead:(-not $commit.Committed)

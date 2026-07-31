@@ -131,6 +131,19 @@ throw "Unexpected fake gh command: $commandLine"
   Assert-Equal (Get-Command gh).Source (Join-Path $fakeGhRoot "gh.ps1") "Fake GitHub CLI was not selected"
 
   $summary = "chore(release): $newLabel release end to end"
+  $dirtyPath = Join-Path $releaseRoot "pending-feature.txt"
+  Write-TestUtf8 $dirtyPath "not ready for release`n"
+  $dirtyOutput = & $shell -NoProfile -ExecutionPolicy Bypass -File $invokeScript `
+    -Operation Release -Version v1.1.0 -PromptLanguage Chinese -Summary $summary -ReleaseNotes $validNotes `
+    -RepositoryRoot $releaseRoot -WhatIf -OutputFormat Json 2>$null
+  if ($LASTEXITCODE -eq 0) { throw "Release WhatIf accepted a dirty working tree" }
+  $dirtyResult = ($dirtyOutput | Select-Object -Last 1) | ConvertFrom-Json
+  Assert-Equal $dirtyResult.stage "ReleasePreflight" "Dirty Release stopped in the wrong stage"
+  Assert-Match $dirtyResult.message 'run CommitPush separately' "Dirty Release did not direct ordinary changes to CommitPush"
+  if (-not (Test-Path -LiteralPath $dirtyPath -PathType Leaf)) { throw "Dirty Release removed the pending user file" }
+  Assert-Equal ((Get-Content -Raw -Encoding UTF8 (Join-Path $releaseRoot "package.json") | ConvertFrom-Json).version) "1.0.0" "Dirty Release changed the project version"
+  Remove-Item -LiteralPath $dirtyPath -Force
+
   $previewOutput = & $shell -NoProfile -ExecutionPolicy Bypass -File $invokeScript `
     -Operation Release -Version v1.1.0 -PromptLanguage Chinese -Summary $summary -ReleaseNotes $validNotes `
     -RepositoryRoot $releaseRoot -WhatIf -OutputFormat Json
@@ -140,8 +153,28 @@ throw "Unexpected fake gh command: $commandLine"
   Assert-Equal $preview.whatIf $true "Release WhatIf JSON is missing the whatIf marker"
   Assert-Equal $preview.commitStyle.selectedStyle "conventional" "Release WhatIf did not report the selected commit style"
   Assert-Equal $preview.commitLanguage.selectedLanguage "Chinese" "Release WhatIf did not report the prompt language"
+  Assert-Match ($preview.actions -join "`n") 'commit only release-owned' "Release WhatIf still describes CommitPush-style staging"
   Assert-Equal ((Get-Content -Raw -Encoding UTF8 (Join-Path $releaseRoot "package.json") | ConvertFrom-Json).version) "1.0.0" "Release WhatIf changed the project version"
   if (git -C $releaseRoot tag) { throw "Release WhatIf created a tag" }
+
+  $configPath = Join-Path $releaseRoot ".codex-release.json"
+  $configBeforeIsolation = Get-Content -Raw -Encoding UTF8 $configPath
+  $isolationConfig = $configBeforeIsolation | ConvertFrom-Json
+  $isolationConfig.prepare.commands[0].command += " && echo unexpected>unexpected-release.txt"
+  Write-TestUtf8 $configPath (($isolationConfig | ConvertTo-Json -Depth 20) + "`n")
+  $isolationOutput = & $shell -NoProfile -ExecutionPolicy Bypass -File $invokeScript `
+    -Operation Release -Version v1.1.0 -PromptLanguage Chinese -Summary $summary -ReleaseNotes $validNotes `
+    -RepositoryRoot $releaseRoot -OutputFormat Json 2>$null
+  if ($LASTEXITCODE -eq 0) { throw "Release committed an unexpected build-created path" }
+  $isolationResult = ($isolationOutput | Select-Object -Last 1) | ConvertFrom-Json
+  Assert-Equal $isolationResult.stage "ReleaseCommit" "Unexpected build path stopped in the wrong stage"
+  Assert-Match $isolationResult.message 'outside its allowed paths.*unexpected-release\.txt' "Release did not identify the path outside its commit allowlist"
+  if (-not (Test-Path -LiteralPath (Join-Path $releaseRoot "unexpected-release.txt") -PathType Leaf)) { throw "Release removed the unexpected build path instead of stopping" }
+  if (git -C $releaseRoot tag) { throw "Release created a tag after allowlist rejection" }
+  & git -C $releaseRoot restore -- package.json
+  Remove-Item -LiteralPath (Join-Path $releaseRoot "unexpected-release.txt") -Force
+  Write-TestUtf8 $configPath $configBeforeIsolation
+  Assert-Equal (git -C $releaseRoot status --porcelain) $null "Release allowlist fixture cleanup left a dirty worktree"
 
   $savedPreference = $ErrorActionPreference
   $ErrorActionPreference = "Continue"
@@ -159,6 +192,9 @@ throw "Unexpected fake gh command: $commandLine"
   Assert-Equal $firstReleaseResult.stage "Publish" "Release resume fixture failed in the wrong stage"
   if (-not (git -C $releaseRoot ls-remote origin refs/tags/v1.1.0)) { throw "Failed Release did not preserve the remote tag for resume" }
   if ((Get-Content -Raw -Encoding UTF8 $fakeGhLog) -match 'release edit v1\.1\.0') { throw "Failed workflow unexpectedly published the draft Release" }
+  $releaseCommitPaths = @(git -C $releaseRoot diff-tree --no-commit-id --name-only -r HEAD)
+  Assert-Equal $releaseCommitPaths.Count 1 "Release commit included paths outside the version allowlist"
+  Assert-Equal $releaseCommitPaths[0] "package.json" "Release commit did not contain only the configured version file"
 
   & $invokeScript -Operation Release -Version v1.1.0 -PromptLanguage Chinese -Summary $summary -ReleaseNotes $validNotes -RepositoryRoot $releaseRoot
   Assert-Equal ((Get-Content -Raw -Encoding UTF8 (Join-Path $releaseRoot "package.json") | ConvertFrom-Json).version) "1.1.0" "Release E2E did not update the version"
@@ -189,6 +225,10 @@ throw "Unexpected fake gh command: $commandLine"
   $createWorkflowPath = Join-Path $releaseRoot ".github\workflows\release.yml"
   $createWorkflow = (Get-Content -Raw -Encoding UTF8 $createWorkflowPath).Replace("release-e2e-1.1.0.exe", "e2e.exe")
   Write-TestUtf8 $createWorkflowPath $createWorkflow
+  & git -C $releaseRoot add -- .github/workflows/release.yml
+  & git -C $releaseRoot commit -m "test: prepare create release workflow" | Out-Null
+  & git -C $releaseRoot push origin main | Out-Null
+  if ($LASTEXITCODE -ne 0) { throw "Create-mode workflow preparation push failed" }
   $env:AUTO_RELEASE_FAKE_MODE = "create"
   $env:AUTO_RELEASE_FAKE_CREATE_MARKER = Join-Path $fakeGhRoot "create-release-exists"
   $env:AUTO_RELEASE_FAKE_ASSET_NAME = "e2e.exe"
